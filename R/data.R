@@ -1,0 +1,59 @@
+################################################################################
+### Sample Datasets
+##
+## Author: Sungjun Hong
+################################################################################
+
+
+#' Three-group sample dataset
+#'
+#' @description
+#' Synthetic observational data for demonstrating three-group matching and
+#' outcome analysis with SAM.
+#'
+#' @format A data frame with 1000 observations and 13 variables:
+#' \describe{
+#'   \item{synthetic_id}{Subject identifier.}
+#'   \item{treatment}{Treatment group.}
+#'   \item{age}{Age.}
+#'   \item{charlson_comorbidity_index}{Charlson comorbidity index.}
+#'   \item{lactate_pre}{Pre-index lactate.}
+#'   \item{mbp_pre}{Pre-index mean blood pressure.}
+#'   \item{creatinine_pre}{Pre-index creatinine.}
+#'   \item{wbc_pre}{Pre-index white blood cell count.}
+#'   \item{male}{Male sex indicator.}
+#'   \item{vasopressor_preindex}{Pre-index vasopressor indicator.}
+#'   \item{invasive_vent_preindex}{Pre-index invasive ventilation indicator.}
+#'   \item{concurrent_vancomycin}{Concurrent vancomycin indicator.}
+#'   \item{mortality_28d}{28-day mortality outcome.}
+#' }
+#'
+#' @source Synthetic data generated for the SAM package.
+"sample_3group"
+
+
+#' Four-group sample dataset
+#'
+#' @description
+#' Synthetic observational data for demonstrating four-group matching and
+#' outcome analysis with SAM.
+#'
+#' @format A data frame with 1000 observations and 13 variables:
+#' \describe{
+#'   \item{synthetic_id}{Subject identifier.}
+#'   \item{treatment}{Treatment group.}
+#'   \item{age}{Age.}
+#'   \item{charlson_comorbidity_index}{Charlson comorbidity index.}
+#'   \item{lactate_pre}{Pre-index lactate.}
+#'   \item{mbp_pre}{Pre-index mean blood pressure.}
+#'   \item{creatinine_pre}{Pre-index creatinine.}
+#'   \item{wbc_pre}{Pre-index white blood cell count.}
+#'   \item{male}{Male sex indicator.}
+#'   \item{vasopressor_preindex}{Pre-index vasopressor indicator.}
+#'   \item{invasive_vent_preindex}{Pre-index invasive ventilation indicator.}
+#'   \item{concurrent_vancomycin}{Concurrent vancomycin indicator.}
+#'   \item{mortality_28d}{28-day mortality outcome.}
+#' }
+#'
+#' @source Synthetic data generated for the SAM package.
+"sample_4group"
