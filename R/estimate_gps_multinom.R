@@ -76,8 +76,24 @@ estimate_gps_multinom <- function(data, X_vars = paste0("X", 1:10),
     paste(sprintf("`%s`", X_vars), collapse = " + ")
   ))
 
+  # Fit to the optimum, not merely to a plausible neighbourhood of it.
+  # `reltol` is a relative tolerance on the deviance, and at 1e-10 nnet's BFGS
+  # stops before it gets there: on synthetic three-group data with n = 20,000
+  # it settles at a log-likelihood of -20546.2099571390, which is 1.2e-8 below
+  # the -20546.2099571272 reached here (and by an independent lbfgs fit of the
+  # same model). `abstol` is a floor on the objective value itself, lowered so
+  # that it cannot end the search first.
+  #
+  # A probability that is right to five digits sounds like more than enough,
+  # but every stage after this one makes *discrete* choices -- which
+  # subjects enter a candidate list, which trio the greedy pass takes next --
+  # and near-equidistant neighbours are common. A probability wrong in its sixth
+  # digit reorders them and changes the matched sets: against a reference
+  # implementation, candidate-slot disagreements fell from 39 to 0 (three
+  # groups, n = 20,000) and 9 to 2 (four groups), and disagreeing `match_3way()`
+  # rows from 462 of 4,020 to 2. The fit costs about 10% more time.
   model <- nnet::multinom(formula, data = model_data, trace = FALSE,
-                           maxit = 5000, reltol = 1e-10)
+                           maxit = 20000, reltol = 1e-15, abstol = 1e-15)
 
   # Predict on the fitted scale, before the coefficients below are rewritten,
   # so the GPS is exactly what the fit produced.

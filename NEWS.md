@@ -1,10 +1,13 @@
 # SAMatch 0.2.0
 
 A correctness, performance and validation pass over the whole package. Results
-on the bundled `sample_4group` and `sample_3group` datasets are unchanged
-throughout: every matching decision, distance, balance value, weight and
-outcome contrast is identical to 0.1.0, apart from the new columns and the one
-sign change listed under "Breaking changes".
+on the bundled `sample_4group` and `sample_3group` datasets are near enough
+unchanged: every matched set, distance, balance value and outcome contrast is
+identical to 0.1.0, apart from the new columns and the one sign change listed
+under "Breaking changes". The GPS itself moves in its sixth digit, from the
+tighter convergence tolerance described under "Bug fixes"; on the bundled data
+that reorders 3 of 13,440 candidate slots (four groups) and 2 of 9,220 (three
+groups), and no matched set changes.
 
 ## Breaking changes
 
@@ -55,6 +58,18 @@ sign change listed under "Breaking changes".
 * Complete outcome separation is detected, warned about, and flagged (#14).
 * An unbounded IPTW weight from near-separation is trimmed; the largest weight
   in a separated example falls from 9,478 to 334 (#9).
+* `estimate_gps_multinom()` fits the multinomial model to convergence. `reltol`
+  was 1e-10, at which nnet's BFGS stops short of the optimum: on synthetic
+  three-group data with n = 20,000 it reached a log-likelihood 1.2e-8 below the
+  one an independent lbfgs fit of the same model finds. The fitted
+  probabilities were wrong by up to 1.7e-5 relative, which matters because
+  everything downstream makes discrete choices from them — against a reference
+  implementation, candidate-slot disagreements fell from 39 to 0 (three groups,
+  n = 20,000), 13 to 0 (n = 5,000) and 9 to 2 (four groups, n = 20,000), and
+  disagreeing `match_3way()` rows from 462 of 4,020 to 2. `reltol` is now
+  1e-15, with `maxit` raised to 20,000 and `abstol` lowered to 1e-15 so that
+  neither of those ends the search first instead. The fit
+  costs about 10% more time (0.269 s to 0.292 s at n = 20,000).
 * `estimate_gps_multinom()` returns a model that applies to the covariates as
   they were given. The covariates are standardized to condition the fit, and
   the model previously came back still expecting standardized input with
