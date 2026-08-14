@@ -80,6 +80,27 @@ compute_smd_balance <- function(data, matched, X_vars = paste0("X", 1:10),
     as.character(groups)
   }
 
+  # A match that formed no sets is a legitimate outcome -- match_3way() with a
+  # tight caliper produces one. Reporting it as covariates that could not be
+  # assessed would send "nothing matched" and "this covariate is constant"
+  # through the same channel; they are different findings.
+  if (nrow(matched) == 0L) {
+    return(list(
+      by_covariate = data.frame(
+        group = character(0), covariate = character(0), smd = numeric(0),
+        abs_smd = numeric(0), smd_defined = logical(0),
+        stringsAsFactors = FALSE
+      ),
+      summary = data.frame(
+        group = groups,
+        mean_abs_smd = NA_real_,
+        max_abs_smd = NA_real_,
+        n_undefined = 0L,
+        stringsAsFactors = FALSE
+      )
+    ))
+  }
+
   x_anchor <- data[matched$anchor, X_vars, drop = FALSE]
 
   rows <- list()
@@ -225,6 +246,14 @@ compute_pairwise_treatment_auc <- function(gps, matched, groups = NULL,
     }
   }
   anchor_level <- treatment_level(anchor_level)
+
+  if (nrow(matched) == 0L) {
+    return(list(
+      pairwise = data.frame(group_1 = character(0), group_2 = character(0),
+                            auc = numeric(0), stringsAsFactors = FALSE),
+      mean_auc = NA_real_
+    ))
+  }
 
   all_levels <- c(anchor_level, groups)
   rows_by_level <- stats::setNames(

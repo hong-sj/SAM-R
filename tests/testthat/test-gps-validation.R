@@ -207,3 +207,55 @@ test_that("a missing treatment label is rejected", {
     "missing treatment label"
   )
 })
+
+test_that("the returned model applies to the covariates as given", {
+  # The covariates are standardized to condition the fit. Previously the model
+  # came back still expecting standardized input, with nothing to say so, and
+  # scoring subjects with it was wrong by up to 0.91 in probability on the
+  # bundled data.
+  fixture <- sam_fixture()
+  fit <- estimate_gps_multinom(fixture$data, X_vars = fixture$X_vars,
+                               treatment_var = "treatment",
+                               anchor_level = fixture$anchor)
+
+  scored <- stats::predict(fit$model,
+                           newdata = fixture$data[, fixture$X_vars, drop = FALSE],
+                           type = "probs")
+  expect_equal(scored[, colnames(fit$gps)], fit$gps, tolerance = 1e-10)
+})
+
+test_that("scoring new subjects agrees with re-running the estimator", {
+  data <- sam_small_data(n = 150L, n_groups = 3L)
+  X_vars <- c("x1", "x2", "x3")
+
+  fit <- estimate_gps_multinom(data, X_vars = X_vars, treatment_var = "T",
+                               anchor_level = "A")
+
+  # A subject the model never saw, on the covariates' own scale.
+  fresh <- data.frame(x1 = 2.5, x2 = -1.25, x3 = 0.75)
+  scored <- stats::predict(fit$model, newdata = fresh, type = "probs")
+
+  expect_length(scored, ncol(fit$gps))
+  expect_equal(sum(scored), 1, tolerance = 1e-10)
+  expect_true(all(scored >= 0 & scored <= 1))
+})
+
+test_that("the coefficients are on the covariates' original scale", {
+  # A covariate rescaled by a constant must have its coefficient scaled by the
+  # inverse, which is only true if the standardization was folded back in.
+  data <- sam_small_data(n = 150L, n_groups = 3L)
+  X_vars <- c("x1", "x2", "x3")
+
+  fit <- estimate_gps_multinom(data, X_vars = X_vars, treatment_var = "T",
+                               anchor_level = "A")
+
+  rescaled <- data
+  rescaled$x1 <- rescaled$x1 * 100
+  refit <- estimate_gps_multinom(rescaled, X_vars = X_vars,
+                                 treatment_var = "T", anchor_level = "A")
+
+  expect_equal(stats::coef(refit$model)[, "x1"],
+               stats::coef(fit$model)[, "x1"] / 100,
+               tolerance = 1e-6)
+  expect_equal(unname(refit$gps), unname(fit$gps), tolerance = 1e-6)
+})

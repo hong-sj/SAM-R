@@ -70,6 +70,21 @@ calc_caliper_3way <- function(ps_used, treatment_var_values) {
 # the primary branch.
 
 kdtree_build <- function(coords) {
+  # The splits alternate between two dimensions, so anything else would index
+  # a column that is not there or silently ignore one. An empty group would
+  # leave the recursion below with nothing to split.
+  if (!is.matrix(coords) || ncol(coords) != 2L) {
+    stop("`coords` must be a two-column matrix, got ",
+         if (is.matrix(coords)) paste0(ncol(coords), " columns") else
+           class(coords)[1], ".", call. = FALSE)
+  }
+  if (nrow(coords) == 0L) {
+    stop("`coords` must contain at least one point.", call. = FALSE)
+  }
+  if (!all(is.finite(coords))) {
+    stop("`coords` must contain only finite values.", call. = FALSE)
+  }
+
   n <- nrow(coords)
   capacity <- max(1L, 2L * n)
 

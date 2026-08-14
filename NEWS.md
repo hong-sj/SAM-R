@@ -55,6 +55,17 @@ sign change listed under "Breaking changes".
 * Complete outcome separation is detected, warned about, and flagged (#14).
 * An unbounded IPTW weight from near-separation is trimmed; the largest weight
   in a separated example falls from 9,478 to 334 (#9).
+* `estimate_gps_multinom()` returns a model that applies to the covariates as
+  they were given. The covariates are standardized to condition the fit, and
+  the model previously came back still expecting standardized input with
+  nothing to say so: scoring the bundled data with it differed from the
+  returned GPS by up to 0.91 in probability. The standardization is now folded
+  back into the coefficients, so `coef()` is on the original scale and
+  `predict()` agrees with `$gps` to 3e-16. The GPS itself is unchanged.
+* A match that formed no sets is reported as an empty result rather than as
+  covariates that could not be assessed. `compute_smd_balance()` and
+  `compute_pairwise_treatment_auc()` sent "nothing matched" and "this covariate
+  is constant" through the same channel; they are different findings.
 * A GPS matrix that does not describe `data` is rejected rather than silently
   producing a different match: values outside `[0, 1]`, non-finite values, rows
   that do not sum to one, duplicated or unnamed columns, a row order that
