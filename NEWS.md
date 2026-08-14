@@ -87,6 +87,28 @@ sign change listed under "Breaking changes".
   match. At n = 20,000 this is 2.84 s to 1.63 s (#7).
 * `match_3way()` tombstones popped candidates rather than deleting them from
   six parallel vectors (#7).
+* `sam_match()` builds one reverse index per comparator group instead of
+  `match()`-ing every anchor's candidates against the whole group, which
+  rebuilt a hash table of the group on every call and accounted for 74% of the
+  function's runtime.
+* `sam_match()` computes the Mahalanobis distances for all screened pairs in
+  one pass rather than one call per anchor. Distances move by at most 2.3e-14
+  relative, from BLAS summation order; no matching decision changes.
+* `sam_match()` selects the cheapest anchor from a shortlist of the smallest
+  losses rather than scanning every remaining anchor. Losses only ever rise, so
+  an anchor outside the shortlist cannot drop below it; this removes the last
+  quadratic term.
+* `extract_matched_data()` assembles the subject-level cohort in one pass
+  instead of building and row-binding one data frame per matched set.
+
+Together, on synthetic data with four balanced groups:
+
+    n = 50,000    sam_match             12.05 s -> 1.44 s
+                  extract_matched_data   1.32 s -> 0.03 s
+    n = 200,000   sam_match             13.34 s -> 5.76 s
+
+Time per anchor in `sam_match()` is now flat at roughly 115 us across
+n = 50,000 to 200,000, where it previously grew with the sample.
 
 ## Documentation and infrastructure
 

@@ -228,23 +228,21 @@ extract_matched_data <- function(data, search, match_result,
     set_ids <- seq_len(nrow(matched))
   }
 
-  # Expand each K-way matched set into K subject-level records
-  matched_index <- do.call(
-    rbind,
-    lapply(seq_len(nrow(matched)), function(i) {
-      subject_rows <- as.integer(
-        unlist(
-          matched[i, c("anchor", groups), drop = FALSE],
-          use.names = FALSE
-        )
-      )
-      data.frame(
-        matched_set_id = set_ids[i],
-        matched_role = c(anchor_level, groups),
-        original_row = subject_rows,
-        stringsAsFactors = FALSE
-      )
-    })
+  # Expand each K-way matched set into K subject-level records.
+  # Transposing gives the row indices in set-major order -- set 1's K subjects,
+  # then set 2's -- which is the layout the roles below are recycled against.
+  # Building one data frame per set and rbind-ing them is quadratic in the
+  # number of sets.
+  roles <- c(anchor_level, groups)
+  subject_rows <- as.integer(t(
+    as.matrix(matched[, c("anchor", groups), drop = FALSE])
+  ))
+
+  matched_index <- data.frame(
+    matched_set_id = rep(set_ids, each = length(roles)),
+    matched_role = rep(roles, times = nrow(matched)),
+    original_row = subject_rows,
+    stringsAsFactors = FALSE
   )
 
   if (anyNA(matched_index$original_row) ||

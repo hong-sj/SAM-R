@@ -174,3 +174,64 @@ test_that("the engine is deterministic", {
                         X_vars = fixture$X_vars, treatment_var = "treatment")
   expect_identical(repeated$matched, fixture$match$matched)
 })
+
+test_that("the shortlist reproduces the rule when it is rebuilt constantly", {
+  # sam_match() selects the cheapest anchor from a shortlist of the 1024
+  # smallest losses rather than scanning every anchor. Test data never reaches
+  # that many anchors, so the rebuild path would otherwise never run. Shrinking
+  # the shortlist to three forces a rebuild every few matches.
+  withr::local_options(SAMatch.shortlist_size = 3L)
+
+  for (seed in 1:4) {
+    data <- sam_small_data(n = 90L, n_groups = 3L, seed = seed)
+    X_vars <- c("x1", "x2", "x3")
+
+    fit <- estimate_gps_multinom(data, X_vars = X_vars, treatment_var = "T",
+                                 anchor_level = "A")
+    search <- gps_candidate_search(data, fit$gps, treatment_var = "T",
+                                   anchor_level = "A", top_m = 4)
+
+    engine <- sam_match(data, search, X_vars = X_vars, treatment_var = "T")
+    reference <- reference_sam_match(data, search, X_vars, "T")
+
+    expect_equal(engine$matched, reference, tolerance = 1e-10,
+                 info = paste("seed", seed))
+  }
+})
+
+test_that("the shortlist size does not change the result", {
+  # Whatever the shortlist size, the selection rule is the same, so every
+  # setting must produce the same matched sets.
+  fixture <- sam_fixture()
+  expected <- fixture$match$matched
+
+  for (size in c(1L, 2L, 7L, 50L, 10000L)) {
+    withr::local_options(SAMatch.shortlist_size = size)
+    result <- sam_match(fixture$data, fixture$search, X_vars = fixture$X_vars,
+                        treatment_var = "treatment")
+    expect_equal(result$matched, expected, info = paste("size", size))
+  }
+})
+
+test_that("a shortlist rebuild preserves the tie-break on tied data", {
+  # Exact ties are where the shortlist's fence matters: an anchor sitting just
+  # outside it at the same loss must not be overlooked.
+  withr::local_options(SAMatch.shortlist_size = 2L)
+
+  set.seed(31L)
+  n <- 120L
+  data <- as.data.frame(matrix(round(stats::rnorm(n * 3)), n, 3,
+                               dimnames = list(NULL, c("x1", "x2", "x3"))))
+  data$T <- rep(c("A", "B", "C"), length.out = n)
+
+  fit <- estimate_gps_multinom(data, X_vars = c("x1", "x2", "x3"),
+                               treatment_var = "T", anchor_level = "A")
+  search <- gps_candidate_search(data, fit$gps, treatment_var = "T",
+                                 anchor_level = "A", top_m = 4)
+
+  engine <- sam_match(data, search, X_vars = c("x1", "x2", "x3"),
+                      treatment_var = "T")
+  reference <- reference_sam_match(data, search, c("x1", "x2", "x3"), "T")
+
+  expect_equal(engine$matched, reference, tolerance = 1e-10)
+})

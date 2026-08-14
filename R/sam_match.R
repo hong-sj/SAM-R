@@ -132,31 +132,60 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
   for (g in groups) {
     candidate_sorted[[g]] <- vector("list", n_A)
     distance_sorted[[g]] <- vector("list", n_A)
-    
-    for (i in seq_len(n_A)) {
-      # `match()` returns NA for a candidate that is not in this group; drop
-      # those directly rather than through na.omit(), which builds an
-      # attribute recording every removed position and dominated this loop.
-      idx <- match(candidates[[i]][[g]], group_rows[[g]])
-      idx <- as.integer(idx[!is.na(idx)])
 
-      if (length(idx) == 0L) {
+    # Where each row of `data` sits within this comparator group, or 0 if it is
+    # not in it. Built once per group: match()-ing every anchor's candidates
+    # against the whole group instead rebuilds a hash table of the group on
+    # every call, which dominated this function at 74% of its runtime.
+    position_in_group <- integer(nrow(data))
+    position_in_group[group_rows[[g]]] <- seq_along(group_rows[[g]])
+
+    per_anchor <- lapply(seq_len(n_A), function(i) {
+      positions <- position_in_group[candidates[[i]][[g]]]
+      positions[!is.na(positions) & positions > 0L]
+    })
+    counts <- lengths(per_anchor)
+    flat_candidate <- unlist(per_anchor, use.names = FALSE)
+    flat_anchor <- rep(seq_len(n_A), counts)
+
+    # Every screened pair in one pass. This is the same expanded form
+    # mahalanobis_distance_matrix() uses -- squared norms under S_inv minus
+    # twice the cross term, clamped at zero -- but calling that function once
+    # per anchor spent most of this loop on R call overhead for a single-row
+    # query. The working set is proportional to the screened candidate set,
+    # which is already held in `candidate_sorted`.
+    anchor_transformed <- X_anchor %*% S_inv
+    anchor_sq <- rowSums(anchor_transformed * X_anchor)
+    group_transformed <- X_group[[g]] %*% S_inv
+    group_sq <- rowSums(group_transformed * X_group[[g]])
+
+    if (length(flat_candidate) > 0L) {
+      cross <- rowSums(anchor_transformed[flat_anchor, , drop = FALSE] *
+                         X_group[[g]][flat_candidate, , drop = FALSE])
+      d2 <- anchor_sq[flat_anchor] + group_sq[flat_candidate] - 2 * cross
+      d2[d2 < 0] <- 0
+      flat_distance <- sqrt(d2)
+    } else {
+      flat_distance <- numeric(0)
+    }
+
+    ends <- cumsum(counts)
+    starts <- ends - counts + 1L
+
+    for (i in seq_len(n_A)) {
+      if (counts[i] == 0L) {
         candidate_sorted[[g]][[i]] <- integer(0)
         distance_sorted[[g]][[i]] <- numeric(0)
         next
       }
-      
-      d <- as.numeric(
-        mahalanobis_distance_matrix(
-          X_anchor[i, , drop = FALSE],
-          X_group[[g]][idx, , drop = FALSE],
-          S_inv
-        )
-      )
-      
+
+      slice <- starts[i]:ends[i]
+      idx <- flat_candidate[slice]
+      d <- flat_distance[slice]
+
       # Preserve candidate order when distances are tied
       ord <- order(d, seq_along(d))
-      
+
       candidate_sorted[[g]][[i]] <- idx[ord]
       distance_sorted[[g]][[i]] <- d[ord]
     }
@@ -297,6 +326,56 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
   matched_dist <- matrix(NA_real_, n_A, length(groups),
                          dimnames = list(NULL, groups))
 
+  # --- Shortlist
+  # Selecting the cheapest anchor by scanning every remaining loss is O(n_A)
+  # per match, which is the dominant cost once n_A reaches tens of thousands.
+  #
+  # An anchor's loss only ever rises: recompute() advances its pointer forward
+  # through a distance-sorted candidate list, never back. So if `shortlist`
+  # holds the anchors with the K smallest losses and `fence` is the (K+1)-th
+  # smallest, no anchor outside the shortlist can drop below the fence, and the
+  # smallest loss inside the shortlist is the global minimum as long as it does
+  # not exceed the fence. Only K losses need scanning per match; the shortlist
+  # is rebuilt when it empties or when its minimum passes the fence.
+  # The option exists so tests can force the rebuild path on data small enough
+  # to check against a brute-force reference; it is not part of the API.
+  shortlist_size <- min(
+    max(1L, as.integer(getOption("SAMatch.shortlist_size", 1024L))),
+    n_A
+  )
+  shortlist <- integer(0)
+  fence <- Inf
+
+  rebuild_shortlist <- function() {
+    candidates_alive <- which(alive & is.finite(best_loss))
+    if (length(candidates_alive) == 0L) {
+      shortlist <<- integer(0)
+      fence <<- Inf
+      return(FALSE)
+    }
+
+    losses <- best_loss[candidates_alive]
+    ranked <- order(losses, candidates_alive)
+    ranked_losses <- losses[ranked]
+    total_alive <- length(candidates_alive)
+
+    keep <- min(shortlist_size, total_alive)
+
+    # Extend past any anchors tied with the last one kept, so that `fence` ends
+    # up strictly greater than every loss in the shortlist. Without that, an
+    # anchor sitting outside the shortlist at exactly the fence value could tie
+    # with the shortlist minimum, and the lowest-index tie-break below would
+    # not see it.
+    while (keep < total_alive &&
+           ranked_losses[keep + 1L] == ranked_losses[keep]) {
+      keep <- keep + 1L
+    }
+
+    shortlist <<- candidates_alive[ranked[seq_len(keep)]]
+    fence <<- if (keep < total_alive) ranked_losses[keep + 1L] else Inf
+    TRUE
+  }
+
   stale <- which(alive)
 
   repeat {
@@ -307,14 +386,42 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
       needs_update[stale] <- FALSE
     }
 
-    # Select the globally smallest-loss matched set. Retired anchors, and
-    # anchors with no available candidate in some group, both carry Inf, so a
-    # non-finite minimum means nothing matchable is left. Scanning the full
-    # vector beats maintaining a pure-R heap: which.min is one C-level pass
-    # with no allocation, whereas a heap would pay R-level call overhead per
-    # sift.
-    i_star <- which.min(best_loss)
-    if (!is.finite(best_loss[i_star])) {
+    # Select the globally smallest-loss matched set, scanning the shortlist
+    # rather than every anchor. Retired anchors and anchors with no available
+    # candidate both carry Inf.
+    i_star <- NA_integer_
+
+    repeat {
+      shortlist <- shortlist[alive[shortlist] & is.finite(best_loss[shortlist])]
+
+      if (length(shortlist) == 0L) {
+        if (!rebuild_shortlist()) {
+          break
+        }
+        next
+      }
+
+      current <- best_loss[shortlist]
+      smallest <- min(current)
+
+      # Every anchor outside the shortlist had a loss of at least `fence` when
+      # it was built, and losses only rise, so it still does. Requiring a
+      # strict inequality means no outside anchor can match or beat `smallest`,
+      # which keeps the tie-break below equivalent to a full scan.
+      if (!(smallest < fence)) {
+        if (!rebuild_shortlist()) {
+          break
+        }
+        next
+      }
+
+      # Lowest anchor index among those attaining the minimum, which is the
+      # tie-break a full which.min() over best_loss would have produced.
+      i_star <- min(shortlist[current == smallest])
+      break
+    }
+
+    if (is.na(i_star)) {
       break
     }
 
