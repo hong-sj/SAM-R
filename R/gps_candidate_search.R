@@ -79,13 +79,7 @@ gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = 
          call. = FALSE)
   }
 
-  # Transform GPS values to the logit scale if requested
-  if (gps_space == "logit") {
-    eps <- 1e-6
-    gps_used <- stats::qlogis(pmin(pmax(gps, eps), 1 - eps))
-  } else {
-    gps_used <- gps
-  }
+  gps_used <- transform_ps(gps, gps_space)
 
   groups <- setdiff(colnames(gps), anchor_level)
   anchor_rows <- require_rows(which(labels == anchor_level), anchor_level,

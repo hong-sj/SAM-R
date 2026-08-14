@@ -106,13 +106,16 @@ kdtree_range <- function(node, coords, query, radius2, active) {
 #' @param search Output from [gps_candidate_search()], used to identify the
 #'   anchor and comparator treatment groups.
 #' @param gps Numeric matrix of generalized propensity scores.
-#' @param X_vars Character vector of covariate names. Retained for
-#'   compatibility with [sam_match()]. Default `paste0("X", 1:10)`.
+#' @param X_vars Ignored, and warned about if supplied. Accepted only so that
+#'   a call written for [sam_match()] fails loudly rather than silently
+#'   matching on something else: this algorithm works in propensity score
+#'   space and never looks at covariates.
 #' @param treatment_var Name of the treatment variable. Default `"T"`.
 #' @param caliper Numeric caliper or `"auto"` to estimate it from the data.
 #'   Default `"auto"`.
-#' @param ps_space Propensity score scale used for matching, either `"raw"`
-#'   or `"logit"`. Default `"raw"`.
+#' @param gps_space Propensity score scale used for matching, either `"raw"`
+#'   or `"logit"`. Default `"raw"`. Named to match [gps_candidate_search()].
+#' @param ps_space Deprecated alias for `gps_space`.
 #' @param top_n Maximum number of candidate trios retained per subject.
 #'   Must be a positive integer. Default `10`.
 #' @param reference_level Treatment group used as the propensity score
@@ -125,6 +128,8 @@ kdtree_range <- function(node, coords, query, radius2, active) {
 #'     \item{unmatched_anchor_rows}{Row indices of unmatched anchor subjects.}
 #'     \item{matching_rate}{Proportion of anchor subjects included in
 #'       matched trios.}
+#'     \item{max_possible_rate}{The highest rate the group sizes allow; see
+#'       [sam_match()].}
 #'     \item{caliper}{Caliper value used for matching.}
 #'     \item{red_level}{Smallest treatment group used as the matching base.}
 #'     \item{reference_level}{Treatment group used as the propensity score
@@ -181,11 +186,29 @@ kdtree_range <- function(node, coords, query, radius2, active) {
 #' head(matched$matched)
 #'
 #' @export
-match_3way <- function(data, search, gps, X_vars = paste0("X", 1:10),
+match_3way <- function(data, search, gps, X_vars = NULL,
                         treatment_var = "T", caliper = "auto",
-                        ps_space = c("raw", "logit"), top_n = 10L,
-                        reference_level = NULL) {
-  ps_space <- match.arg(ps_space)
+                        gps_space = c("raw", "logit"), top_n = 10L,
+                        reference_level = NULL, ps_space = NULL) {
+  gps_space <- match.arg(gps_space)
+
+  # `ps_space` named the same raw/logit toggle that gps_candidate_search calls
+  # `gps_space`, and the README used both within one section.
+  if (!is.null(ps_space)) {
+    warning("`ps_space` is deprecated; use `gps_space` instead.",
+            call. = FALSE)
+    gps_space <- match.arg(ps_space, c("raw", "logit"))
+  }
+
+  # Covariates play no part in this algorithm -- it matches in two-dimensional
+  # propensity score space. The argument was previously accepted and silently
+  # discarded, so a caller passing covariates and expecting them to matter got
+  # no signal at all.
+  if (!is.null(X_vars)) {
+    warning("`X_vars` is ignored by match_3way(): matching uses the ",
+            "propensity score space, not covariate distances.", call. = FALSE)
+  }
+
   top_n <- require_positive_int(top_n, "top_n")
   check_fingerprint(search, data, treatment_var)
   labels <- treatment_labels(data, treatment_var)
@@ -211,13 +234,7 @@ match_3way <- function(data, search, gps, X_vars = paste0("X", 1:10),
   ps_levels <- setdiff(all_levels, reference_level)
   stopifnot(length(ps_levels) == 2L)
 
-  ps_raw <- gps[, ps_levels, drop = FALSE]
-  if (ps_space == "logit") {
-    eps <- 1e-6
-    ps_used <- stats::qlogis(pmin(pmax(ps_raw, eps), 1 - eps))
-  } else {
-    ps_used <- ps_raw
-  }
+  ps_used <- transform_ps(gps[, ps_levels, drop = FALSE], gps_space)
   colnames(ps_used) <- ps_levels
 
   # --- Caliper
@@ -329,7 +346,16 @@ match_3way <- function(data, search, gps, X_vars = paste0("X", 1:10),
   for (i in seq_len(n_red)) push_candidates(i)
 
   # --- Global greedy matching
-  matched_rows <- list()
+  # Results accumulate into preallocated vectors and are assembled once, rather
+  # than growing a list of one-row data frames.
+  n_matched <- 0L
+  matched_anchor <- integer(n_red)
+  matched_loss <- numeric(n_red)
+  matched_perimeter <- numeric(n_red)
+  matched_choice <- matrix(NA_integer_, n_red, length(groups),
+                           dimnames = list(NULL, groups))
+  matched_dist <- matrix(NA_real_, n_red, length(groups),
+                         dimnames = list(NULL, groups))
 
   while (length(pool_perim) > 0) {
     pop <- which.min(pool_perim)
@@ -359,21 +385,21 @@ match_3way <- function(data, search, gps, X_vars = paste0("X", 1:10),
       )
       row_anchor <- rows_this_trio[[anchor_level]]
 
-      row_df <- data.frame(matched_set_id = length(matched_rows) + 1L, anchor = row_anchor)
-      
-      for (gg in groups) row_df[[gg]] <- rows_this_trio[[gg]]
+      n_matched <- n_matched + 1L
+      matched_anchor[n_matched] <- row_anchor
 
-      # Compute anchor-to-comparator propensity score distances
+      # Anchor-to-comparator propensity score distances
       for (gg in groups) {
-        row_df[[paste0("dist_", gg)]] <- sqrt(sum((ps_used[row_anchor, ] - ps_used[row_df[[gg]], ])^2))
+        row_group <- rows_this_trio[[gg]]
+        matched_choice[n_matched, gg] <- row_group
+        matched_dist[n_matched, gg] <-
+          sqrt(sum((ps_used[row_anchor, ] - ps_used[row_group, ])^2))
       }
-      
-      # Compute anchor-to-comparator propensity score distances
-      row_df$loss <- sum(vapply(groups, function(gg) row_df[[paste0("dist_", gg)]], numeric(1)))
-      
+
+      matched_loss[n_matched] <- sum(matched_dist[n_matched, ])
+
       # Full propensity-score triangle perimeter used by this method
-      row_df$rassen_perimeter <- perim_popped
-      matched_rows[[length(matched_rows) + 1]] <- row_df
+      matched_perimeter[n_matched] <- perim_popped
     } else {
       # Refresh candidates when all current options become unavailable
       counters[i] <- counters[i] - 1L
@@ -384,28 +410,25 @@ match_3way <- function(data, search, gps, X_vars = paste0("X", 1:10),
   }
 
   # --- Output
-  matched <- if (length(matched_rows) > 0) {
-    out <- do.call(rbind, matched_rows)
-    rownames(out) <- NULL
-    out
-  } else {
-    empty <- data.frame(matched_set_id = integer(0), anchor = integer(0))
-    for (g in groups) empty[[g]] <- integer(0)
-    for (g in groups) empty[[paste0("dist_", g)]] <- numeric(0)
-    empty$loss <- numeric(0)
-    empty$rassen_perimeter <- numeric(0)
-    empty
-  }
+  keep <- seq_len(n_matched)
+  named_groups <- stats::setNames(groups, groups)
 
-  matched_anchor_rows <- if (nrow(matched) > 0) matched$anchor else integer(0)
-  unmatched_anchor_rows <- setdiff(anchor_rows, matched_anchor_rows)
+  matched <- build_matched_frame(
+    anchor = matched_anchor[keep],
+    group_choices = lapply(named_groups, function(g) matched_choice[keep, g]),
+    group_distances = lapply(named_groups, function(g) matched_dist[keep, g]),
+    loss = matched_loss[keep],
+    groups = groups,
+    extra = list(rassen_perimeter = matched_perimeter[keep])
+  )
 
-  list(
-    matched = matched,
-    unmatched_anchor_rows = unmatched_anchor_rows,
-    matching_rate = nrow(matched) / length(anchor_rows),
-    caliper = caliper,
-    red_level = red_level,
-    reference_level = reference_level
+  c(
+    list(matched = matched),
+    summarize_matching(matched, anchor_rows, rows_by_level[groups]),
+    list(
+      caliper = caliper,
+      red_level = red_level,
+      reference_level = reference_level
+    )
   )
 }

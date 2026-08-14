@@ -15,7 +15,9 @@
 #' @param matched Matched-set data returned by [sam_match()] or
 #'   [match_3way()].
 #' @param X_vars Character vector of covariate column names.
-#' @param groups Character vector of comparator treatment groups.
+#'   Default `paste0("X", 1:10)`.
+#' @param groups Character vector of comparator treatment groups. If `NULL`,
+#'   inferred from the columns of `matched`.
 #'
 #' @return A list containing:
 #'   \describe{
@@ -69,9 +71,14 @@
 #' balance$summary
 #'
 #' @export
-compute_smd_balance <- function(data, matched, X_vars, groups) {
+compute_smd_balance <- function(data, matched, X_vars = paste0("X", 1:10),
+                                groups = NULL) {
   require_covariates(data, X_vars)
-  groups <- as.character(groups)
+  groups <- if (is.null(groups)) {
+    groups_from_matched(matched)
+  } else {
+    as.character(groups)
+  }
 
   x_anchor <- data[matched$anchor, X_vars, drop = FALSE]
 
@@ -147,8 +154,10 @@ summarize_smd <- function(by_covariate, groups) {
 #' @param gps Numeric matrix of generalized propensity scores.
 #' @param matched Matched-set data returned by [sam_match()] or
 #'   [match_3way()].
-#' @param groups Character vector of comparator treatment groups.
-#' @param anchor_level Anchor treatment group.
+#' @param groups Character vector of comparator treatment groups. If `NULL`,
+#'   inferred from the columns of `matched`.
+#' @param anchor_level Anchor treatment group. If `NULL`, inferred as the GPS
+#'   column that is not a comparator group.
 #'
 #' @return A list containing:
 #'   \describe{
@@ -199,7 +208,24 @@ summarize_smd <- function(by_covariate, groups) {
 #' auc$mean_auc
 #'
 #' @export
-compute_pairwise_treatment_auc <- function(gps, matched, groups, anchor_level) {
+compute_pairwise_treatment_auc <- function(gps, matched, groups = NULL,
+                                           anchor_level = NULL) {
+  groups <- if (is.null(groups)) {
+    groups_from_matched(matched)
+  } else {
+    as.character(groups)
+  }
+
+  if (is.null(anchor_level)) {
+    # The GPS column that is not a comparator group is the anchor.
+    anchor_level <- setdiff(colnames(gps), groups)
+    if (length(anchor_level) != 1L) {
+      stop("Could not infer `anchor_level` from the GPS columns; pass it ",
+           "explicitly.", call. = FALSE)
+    }
+  }
+  anchor_level <- treatment_level(anchor_level)
+
   all_levels <- c(anchor_level, groups)
   rows_by_level <- stats::setNames(
     lapply(all_levels, function(g) if (g == anchor_level) matched$anchor else matched[[g]]),

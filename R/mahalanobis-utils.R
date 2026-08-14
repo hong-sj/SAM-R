@@ -12,7 +12,8 @@
 #'
 #' @param data A `data.frame` containing covariate and treatment variables.
 #' @param X_vars Character vector of covariate column names.
-#' @param treatment_var Name of the treatment variable.
+#'   Default `paste0("X", 1:10)`.
+#' @param treatment_var Name of the treatment variable. Default `"T"`.
 #'
 #' @return A list containing the pooled covariance matrix (`S`) and its
 #'   inverse (`S_inv`).
@@ -34,7 +35,8 @@
 #' dim(pooled$S)
 #'
 #' @export
-get_pooled_covariance <- function(data, X_vars, treatment_var) {
+get_pooled_covariance <- function(data, X_vars = paste0("X", 1:10),
+                                  treatment_var = "T") {
   labels <- treatment_labels(data, treatment_var)
   X <- covariate_matrix(data, X_vars)
   groups <- unique(labels)

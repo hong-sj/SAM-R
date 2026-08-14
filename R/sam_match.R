@@ -30,6 +30,11 @@
 #'       could not be matched.}
 #'     \item{matching_rate}{Proportion of anchor subjects successfully
 #'       matched.}
+#'     \item{max_possible_rate}{The highest rate the group sizes allow. Each
+#'       matched set consumes one subject from every comparator group, so the
+#'       rate is capped by the smallest comparator group over the anchor
+#'       count. Reported alongside `matching_rate` so that a rate which looks
+#'       low can be recognised as saturated.}
 #'   }
 #'
 #' @examples
@@ -80,28 +85,12 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
   
   # Empty anchor group
   if (n_A == 0L) {
-    matched <- data.frame(
-      matched_set_id = integer(0),
-      anchor = integer(0)
-    )
-    
-    for (g in groups) {
-      matched[[g]] <- integer(0)
-    }
-    
-    for (g in groups) {
-      matched[[paste0("dist_", g)]] <- numeric(0)
-    }
-    
-    matched$loss <- numeric(0)
-    
-    return(list(
-      matched = matched,
-      unmatched_anchor_rows = integer(0),
-      matching_rate = NaN
+    return(c(
+      list(matched = empty_matched_frame(groups)),
+      summarize_matching(empty_matched_frame(groups), anchor_rows, list())
     ))
   }
-  
+
   # Mahalanobis distance setup
   pooled <- get_pooled_covariance(data, X_vars, treatment_var)
   S_inv <- pooled$S_inv
@@ -230,9 +219,18 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
     invisible(NULL)
   }
   
-  # Global greedy matching
-  matched_rows <- list()
-  
+  # Global greedy matching.
+  # Results accumulate into preallocated vectors and are assembled once at the
+  # end; growing a list of one-row data frames and rbind-ing it is quadratic in
+  # the number of matched sets.
+  n_matched <- 0L
+  matched_anchor <- integer(n_A)
+  matched_loss <- numeric(n_A)
+  matched_choice <- matrix(NA_integer_, n_A, length(groups),
+                           dimnames = list(NULL, groups))
+  matched_dist <- matrix(NA_real_, n_A, length(groups),
+                         dimnames = list(NULL, groups))
+
   while (length(remaining_anchor) > 0L) {
     stale <- remaining_anchor[needs_update[remaining_anchor]]
     
@@ -265,22 +263,15 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
     
     choice_star <- best_choice[i_star, , drop = TRUE]
     
-    row_df <- data.frame(
-      matched_set_id = length(matched_rows) + 1L,
-      anchor = anchor_rows[i_star]
-    )
-    
+    n_matched <- n_matched + 1L
+    matched_anchor[n_matched] <- anchor_rows[i_star]
+    matched_loss[n_matched] <- best_loss[i_star]
+    matched_dist[n_matched, ] <- best_dist[i_star, ]
+
     for (g in groups) {
-      row_df[[g]] <- group_rows[[g]][choice_star[[g]]]
+      matched_choice[n_matched, g] <- group_rows[[g]][choice_star[[g]]]
     }
-    
-    for (g in groups) {
-      row_df[[paste0("dist_", g)]] <- best_dist[i_star, g]
-    }
-    
-    row_df$loss <- best_loss[i_star]
-    matched_rows[[length(matched_rows) + 1L]] <- row_df
-    
+
     # Remove the selected anchor and comparator subjects
     remaining_anchor <- remaining_anchor[
       remaining_anchor != i_star
@@ -308,41 +299,17 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
   }
   
   # Output
-  if (length(matched_rows) > 0L) {
-    matched <- do.call(rbind, matched_rows)
-    rownames(matched) <- NULL
-    
-  } else {
-    matched <- data.frame(
-      matched_set_id = integer(0),
-      anchor = integer(0)
-    )
-    
-    for (g in groups) {
-      matched[[g]] <- integer(0)
-    }
-    
-    for (g in groups) {
-      matched[[paste0("dist_", g)]] <- numeric(0)
-    }
-    
-    matched$loss <- numeric(0)
-  }
-  
-  matched_anchor_rows <- if (nrow(matched) > 0L) {
-    matched$anchor
-  } else {
-    integer(0)
-  }
-  
-  unmatched_anchor_rows <- setdiff(
-    anchor_rows,
-    matched_anchor_rows
+  keep <- seq_len(n_matched)
+  named_groups <- stats::setNames(groups, groups)
+
+  matched <- build_matched_frame(
+    anchor = matched_anchor[keep],
+    group_choices = lapply(named_groups, function(g) matched_choice[keep, g]),
+    group_distances = lapply(named_groups, function(g) matched_dist[keep, g]),
+    loss = matched_loss[keep],
+    groups = groups
   )
-  
-  list(
-    matched = matched,
-    unmatched_anchor_rows = unmatched_anchor_rows,
-    matching_rate = nrow(matched) / n_A
-  )
+
+  c(list(matched = matched),
+    summarize_matching(matched, anchor_rows, group_rows))
 }

@@ -4,14 +4,15 @@
 \alias{get_pooled_covariance}
 \title{Pooled within-group covariance matrix}
 \usage{
-get_pooled_covariance(data, X_vars, treatment_var)
+get_pooled_covariance(data, X_vars = paste0("X", 1:10), treatment_var = "T")
 }
 \arguments{
 \item{data}{A `data.frame` containing covariate and treatment variables.}
 
-\item{X_vars}{Character vector of covariate column names.}
+\item{X_vars}{Character vector of covariate column names.
+Default `paste0("X", 1:10)`.}
 
-\item{treatment_var}{Name of the treatment variable.}
+\item{treatment_var}{Name of the treatment variable. Default `"T"`.}
 }
 \value{
 A list containing the pooled covariance matrix (`S`) and its
