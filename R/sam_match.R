@@ -71,6 +71,7 @@
 sam_match <- function(data, search, X_vars = paste0("X", 1:10),
                       treatment_var = "T") {
   
+  labels <- treatment_labels(data, treatment_var)
   anchor_rows <- as.integer(search$anchor_rows)
   groups <- as.character(search$groups)
   candidates <- search$candidates
@@ -105,7 +106,9 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
   S_inv <- pooled$S_inv
   
   group_rows <- stats::setNames(
-    lapply(groups, function(g) which(data[[treatment_var]] == g)),
+    lapply(groups, function(g) {
+      require_rows(which(labels == g), g, treatment_var, available = labels)
+    }),
     groups
   )
   

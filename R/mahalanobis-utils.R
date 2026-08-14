@@ -35,12 +35,13 @@
 #'
 #' @export
 get_pooled_covariance <- function(data, X_vars, treatment_var) {
-  groups <- unique(data[[treatment_var]])
+  labels <- treatment_labels(data, treatment_var)
+  groups <- unique(labels)
   p <- length(X_vars)
   S_within <- matrix(0, p, p, dimnames = list(X_vars, X_vars))
 
   for (g in groups) {
-    Xg <- as.matrix(data[data[[treatment_var]] == g, X_vars, drop = FALSE])
+    Xg <- as.matrix(data[labels == g, X_vars, drop = FALSE])
     Xg_centered <- sweep(Xg, MARGIN = 2, STATS = colMeans(Xg), FUN = "-")
     S_within <- S_within + crossprod(Xg_centered)
   }
@@ -167,8 +168,12 @@ mahalanobis_distance_matrix <- function(X_query, X_reference, S_inv) {
 #' @export
 build_group_distance_matrices <- function(data, X_vars, treatment_var, anchor_rows, groups) {
   pooled <- get_pooled_covariance(data, X_vars, treatment_var)
+  labels <- treatment_labels(data, treatment_var)
+  groups <- as.character(groups)
   group_rows <- stats::setNames(
-    lapply(groups, function(g) which(data[[treatment_var]] == g)), groups
+    lapply(groups, function(g) {
+      require_rows(which(labels == g), g, treatment_var, available = labels)
+    }), groups
   )
   X_anchor <- as.matrix(data[anchor_rows, X_vars, drop = FALSE])
   D <- stats::setNames(lapply(groups, function(g) {

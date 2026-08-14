@@ -41,10 +41,19 @@
 #' @export
 estimate_gps_multinom <- function(data, X_vars = paste0("X", 1:10),
                                    treatment_var = "T", anchor_level = "A") {
-  stopifnot(treatment_var %in% names(data), all(X_vars %in% names(data)))
+  stopifnot(all(X_vars %in% names(data)))
 
-  # Anchor A as the reference category
-  treatment_factor <- stats::relevel(factor(data[[treatment_var]]), ref = anchor_level)
+  labels <- treatment_labels(data, treatment_var)
+  anchor_level <- treatment_level(anchor_level)
+  require_rows(which(labels == anchor_level), anchor_level, treatment_var,
+               available = labels)
+
+  # Anchor as the reference category. The level order of an existing factor is
+  # preserved, but `ref` must be passed as a character label: relevel() reads a
+  # numeric `ref` as a position in levels(), so a numeric anchor_level would
+  # otherwise select a different reference category than the caller named.
+  treatment_factor <- stats::relevel(factor(data[[treatment_var]]),
+                                     ref = anchor_level)
 
   # Standardize covariates for numerical stability
   X_raw <- as.matrix(data[, X_vars, drop = FALSE])

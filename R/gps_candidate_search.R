@@ -63,7 +63,16 @@ gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = 
                                   top_m = 10, gps_space = c("raw", "logit")) {
   gps_space <- match.arg(gps_space)
   top_m <- require_positive_int(top_m, "top_m")
-  stopifnot(treatment_var %in% names(data), nrow(gps) == nrow(data))
+  labels <- treatment_labels(data, treatment_var)
+  anchor_level <- treatment_level(anchor_level)
+  stopifnot(nrow(gps) == nrow(data))
+
+  if (!(anchor_level %in% colnames(gps))) {
+    stop("`anchor_level` \"", anchor_level, "\" is not a column of `gps`. ",
+         "GPS columns: ",
+         paste0("\"", colnames(gps), "\"", collapse = ", "), ".",
+         call. = FALSE)
+  }
 
   # Transform GPS values to the logit scale if requested
   if (gps_space == "logit") {
@@ -74,12 +83,14 @@ gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = 
   }
 
   groups <- setdiff(colnames(gps), anchor_level)
-  anchor_rows <- which(data[[treatment_var]] == anchor_level)
+  anchor_rows <- require_rows(which(labels == anchor_level), anchor_level,
+                              treatment_var, available = labels)
   X_anchor <- gps_used[anchor_rows, , drop = FALSE]
 
   # Compute Euclidean GPS distances for each comparator group
   candidates_by_group <- lapply(groups, function(g) {
-    group_rows <- which(data[[treatment_var]] == g)
+    group_rows <- require_rows(which(labels == g), g, treatment_var,
+                               available = labels)
     X_group <- gps_used[group_rows, , drop = FALSE]
 
     x_sq <- rowSums(X_anchor^2)

@@ -79,10 +79,11 @@
 #' @export
 sam_evaluate <- function(data, search, match_result, gps,
                           X_vars = paste0("X", 1:10), treatment_var = "T") {
-  groups <- search$groups
+  groups <- as.character(search$groups)
   matched <- match_result$matched
 
-  anchor_level <- as.character(unique(data[[treatment_var]][search$anchor_rows]))
+  labels <- treatment_labels(data, treatment_var)
+  anchor_level <- unique(labels[search$anchor_rows])
   stopifnot(length(anchor_level) == 1)
 
   # Summarize a matched-set distance metric
@@ -189,14 +190,11 @@ extract_matched_data <- function(data, search, match_result,
                                      treatment_var = "T",
                                      anchor_level = NULL) {
   matched <- match_result$matched
-  groups <- search$groups
+  groups <- as.character(search$groups)
 
-  if (!is.data.frame(data)) {
-    stop("`data` must be a data.frame.")
-  }
-  if (!(treatment_var %in% names(data))) {
-    stop("Treatment column not found: ", treatment_var)
-  }
+  labels <- treatment_labels(data, treatment_var)
+  anchor_level <- treatment_level(anchor_level)
+
   if (is.null(matched) || nrow(matched) == 0L) {
     stop("`match_result` contains no matched sets.")
   }
@@ -209,9 +207,7 @@ extract_matched_data <- function(data, search, match_result,
   }
 
   if (is.null(anchor_level)) {
-    anchor_level <- unique(
-      as.character(data[[treatment_var]][search$anchor_rows])
-    )
+    anchor_level <- unique(labels[search$anchor_rows])
     if (length(anchor_level) != 1L) {
       stop("Could not uniquely determine `anchor_level` from ",
            "`search$anchor_rows`.")
@@ -262,7 +258,7 @@ extract_matched_data <- function(data, search, match_result,
   matched_data <- matched_data[
     order(
       matched_data$matched_set_id,
-      match(as.character(matched_data[[treatment_var]]), treatment_order)
+      match(labels[matched_index$original_row], treatment_order)
     ),
     , drop = FALSE
   ]
@@ -486,6 +482,7 @@ sam_estimate_effects <- function(matched_data, outcome_var,
     stop("`anchor_level` must be supplied or available as an attribute ",
          "from `extract_matched_data()`.")
   }
+  anchor_level <- treatment_level(anchor_level)
 
   treatment_levels <- unique(
     as.character(analysis_data[[treatment_var]])
@@ -498,6 +495,7 @@ sam_estimate_effects <- function(matched_data, outcome_var,
   # whenever possible; otherwise retain observed order.
   stored_groups <- attr(matched_data, "groups")
   if (!is.null(stored_groups)) {
+    stored_groups <- as.character(stored_groups)
     comparator_levels <- stored_groups[stored_groups %in% treatment_levels]
   } else {
     comparator_levels <- setdiff(treatment_levels, anchor_level)

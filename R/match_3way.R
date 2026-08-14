@@ -187,14 +187,15 @@ match_3way <- function(data, search, gps, X_vars = paste0("X", 1:10),
                         reference_level = NULL) {
   ps_space <- match.arg(ps_space)
   top_n <- require_positive_int(top_n, "top_n")
-  groups <- search$groups
+  labels <- treatment_labels(data, treatment_var)
+  groups <- as.character(search$groups)
   if (length(groups) != 2L) {
     stop("match_3way() requires exactly three treatment groups ",
          "(1 anchor + 2 comparator groups).")
   }
   anchor_rows <- search$anchor_rows
 
-  anchor_level <- as.character(unique(data[[treatment_var]][anchor_rows]))
+  anchor_level <- unique(labels[anchor_rows])
   stopifnot(length(anchor_level) == 1)
   all_levels <- c(anchor_level, groups)
   stopifnot(all(all_levels %in% colnames(gps)))
@@ -220,14 +221,16 @@ match_3way <- function(data, search, gps, X_vars = paste0("X", 1:10),
 
   # --- Caliper
   if (identical(caliper, "auto")) {
-    caliper <- calc_caliper_3way(ps_used, as.character(data[[treatment_var]]))
+    caliper <- calc_caliper_3way(ps_used, labels)
   }
   stopifnot(is.numeric(caliper), length(caliper) == 1, caliper > 0)
 
   # --- Treatment groups
   # Use the smallest treatment group as the matching base
   rows_by_level <- stats::setNames(
-    lapply(all_levels, function(lv) which(data[[treatment_var]] == lv)),
+    lapply(all_levels, function(lv) {
+      require_rows(which(labels == lv), lv, treatment_var, available = labels)
+    }),
     all_levels
   )
   sizes <- vapply(rows_by_level, length, integer(1))

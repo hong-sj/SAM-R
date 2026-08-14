@@ -53,12 +53,12 @@ compute_balancing_weights <- function(data, method = c("iptw", "overlap", "match
                                        treatment_var = "T", anchor_level = "A",
                                        stabilize = TRUE) {
   method <- match.arg(method)
-  stopifnot(treatment_var %in% names(data))
+  treat_chr <- treatment_labels(data, treatment_var)
+  anchor_level <- treatment_level(anchor_level)
   if (is.null(gps)) {
     gps <- estimate_gps_multinom(data, X_vars = X_vars, treatment_var = treatment_var,
                                   anchor_level = anchor_level)$gps
   }
-  treat_chr <- as.character(data[[treatment_var]])
   stopifnot(all(treat_chr %in% colnames(gps)))
 
   own_gps <- gps[cbind(seq_len(nrow(gps)), match(treat_chr, colnames(gps)))]
@@ -97,7 +97,10 @@ compute_balancing_weights <- function(data, method = c("iptw", "overlap", "match
 compute_weighted_balance <- function(data, weights, X_vars = paste0("X", 1:10),
                                       treatment_var = "T", anchor_level = "A") {
   stopifnot(length(weights) == nrow(data))
-  treat_chr <- as.character(data[[treatment_var]])
+  treat_chr <- treatment_labels(data, treatment_var)
+  anchor_level <- treatment_level(anchor_level)
+  require_rows(which(treat_chr == anchor_level), anchor_level, treatment_var,
+               available = treat_chr)
   groups <- setdiff(unique(treat_chr), anchor_level)
 
   wtd_mean <- function(x, w) sum(x * w) / sum(w)
@@ -149,7 +152,7 @@ compute_weighted_balance <- function(data, weights, X_vars = paste0("X", 1:10),
 #' @export
 compute_effective_sample_size <- function(data, weights, treatment_var = "T") {
   stopifnot(length(weights) == nrow(data))
-  treat_chr <- as.character(data[[treatment_var]])
+  treat_chr <- treatment_labels(data, treatment_var)
   groups <- unique(treat_chr)
   rows <- lapply(groups, function(g) {
     w <- weights[treat_chr == g]
