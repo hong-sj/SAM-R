@@ -24,10 +24,20 @@
 #'   Ignored for `method %in% c("overlap", "matching")`, which are already
 #'   bounded and do not use this stabilization (see file header). Default
 #'   `TRUE`.
+#' @param trim Lower bound applied to the generalized propensity scores before
+#'   dividing by them, in `[0, 1)`; `0` disables it. Scores are clipped at
+#'   `trim` and renormalized to sum to one. Because the GPS model is fitted
+#'   without regularization, near-separation can drive a score toward zero and
+#'   the resulting weight either dominates every downstream summary or becomes
+#'   an infinity that propagates silently. Default `1e-3`.
 #'
 #' @return A list with elements `weights` (numeric vector, length
 #'   `nrow(data)`), `h` (the tilting-function value per subject), `method`,
-#'   and `gps` (the GPS matrix used).
+#'   `gps` (the GPS matrix supplied or estimated, before trimming), and
+#'   `n_trimmed` (the number of subjects with at least one score below `trim`).
+#'   `n_trimmed` doubles as a positivity diagnostic: a nonzero count means the
+#'   data contain subjects with near-zero probability of a treatment they could
+#'   have received.
 #'
 #' @examples
 #' data(sample_4group)
@@ -51,22 +61,40 @@
 compute_balancing_weights <- function(data, method = c("iptw", "overlap", "matching"),
                                        gps = NULL, X_vars = paste0("X", 1:10),
                                        treatment_var = "T", anchor_level = "A",
-                                       stabilize = TRUE) {
+                                       stabilize = TRUE, trim = 1e-3) {
   method <- match.arg(method)
-  stopifnot(treatment_var %in% names(data))
+  treat_chr <- treatment_labels(data, treatment_var)
+  anchor_level <- treatment_level(anchor_level)
+  if (!is.numeric(trim) || length(trim) != 1L || !is.finite(trim) ||
+      trim < 0 || trim >= 1) {
+    stop("`trim` must be a single number in [0, 1).", call. = FALSE)
+  }
   if (is.null(gps)) {
     gps <- estimate_gps_multinom(data, X_vars = X_vars, treatment_var = treatment_var,
                                   anchor_level = anchor_level)$gps
   }
-  treat_chr <- as.character(data[[treatment_var]])
-  stopifnot(all(treat_chr %in% colnames(gps)))
+  gps <- validate_gps(data, gps, treatment_var, "compute_balancing_weights")
 
-  own_gps <- gps[cbind(seq_len(nrow(gps)), match(treat_chr, colnames(gps)))]
+  # Bound the scores away from zero before dividing by them. estimate_gps_
+  # multinom fits an unregularised model, so near-separation can drive a score
+  # toward zero; left unbounded, one such score produces a weight large enough
+  # to dominate every downstream summary, or an infinity that propagates into
+  # the balance and effective-sample-size tables without a warning.
+  gps_used <- gps
+  n_trimmed <- if (trim > 0) sum(apply(gps_used < trim, 1, any)) else 0L
+
+  if (n_trimmed > 0L) {
+    gps_used <- pmax(gps_used, trim)
+    gps_used <- gps_used / rowSums(gps_used)
+  }
+
+  own_gps <- gps_used[cbind(seq_len(nrow(gps_used)),
+                            match(treat_chr, colnames(gps_used)))]
 
   h <- switch(method,
-    iptw = rep(1, nrow(gps)),
-    overlap = 1 / rowSums(1 / gps),
-    matching = apply(gps, 1, min)
+    iptw = rep(1, nrow(gps_used)),
+    overlap = 1 / rowSums(1 / gps_used),
+    matching = do.call(pmin, as.data.frame(gps_used))
   )
 
   weights <- h / own_gps
@@ -76,7 +104,8 @@ compute_balancing_weights <- function(data, method = c("iptw", "overlap", "match
     weights <- weights * as.numeric(marg_p[treat_chr])
   }
 
-  list(weights = as.numeric(weights), h = as.numeric(h), method = method, gps = gps)
+  list(weights = as.numeric(weights), h = as.numeric(h), method = method,
+       gps = gps, n_trimmed = as.integer(n_trimmed))
 }
 
 #' Weighted covariate balance
@@ -85,20 +114,53 @@ compute_balancing_weights <- function(data, method = c("iptw", "overlap", "match
 #' Computes weighted standardized mean differences (SMDs) between the anchor
 #' group and each comparator group for all covariates in `X_vars`.
 #'
+#' SMDs are reported as anchor minus comparator, the same orientation as
+#' [compute_smd_balance()], so the two tables can be read side by side.
+#'
 #' @param data,X_vars,treatment_var,anchor_level See
 #'   [compute_balancing_weights()].
 #' @param weights Numeric vector, length `nrow(data)`, e.g.
 #'   `compute_balancing_weights(...)$weights`.
 #'
 #' @return A list with `by_covariate` and `summary` data frames, in the
-#'   same shape as [compute_smd_balance()]'s return value.
+#'   same shape as [compute_smd_balance()]'s return value. `by_covariate`
+#'   additionally carries `abs_smd`, and both carry the `smd_defined` flag and
+#'   `n_undefined` count described there.
 #'
 #' @export
 compute_weighted_balance <- function(data, weights, X_vars = paste0("X", 1:10),
                                       treatment_var = "T", anchor_level = "A") {
-  stopifnot(length(weights) == nrow(data))
-  treat_chr <- as.character(data[[treatment_var]])
+  weights <- as.numeric(weights)
+  if (length(weights) != nrow(data)) {
+    stop("`weights` and `data` must have the same number of observations (",
+         length(weights), " vs ", nrow(data), ").", call. = FALSE)
+  }
+  if (!all(is.finite(weights))) {
+    stop("`weights` must all be finite.", call. = FALSE)
+  }
+  if (any(weights < 0)) {
+    stop("`weights` must be non-negative.", call. = FALSE)
+  }
+
+  treat_chr <- treatment_labels(data, treatment_var)
+  anchor_level <- treatment_level(anchor_level)
+  anchor_rows <- require_rows(which(treat_chr == anchor_level), anchor_level,
+                              treatment_var, available = treat_chr)
   groups <- setdiff(unique(treat_chr), anchor_level)
+
+  # A group whose weights sum to zero makes every weighted mean 0/0, which
+  # would otherwise surface as a table of NaNs.
+  zero_weight <- c(anchor_level, groups)[
+    vapply(c(anchor_level, groups),
+           function(g) sum(weights[treat_chr == g]) <= 0, logical(1))
+  ]
+  if (length(zero_weight) > 0L) {
+    stop("Weights must have a positive sum in every treatment group; the sum ",
+         "is zero in: ", paste(zero_weight, collapse = ", "), ".",
+         call. = FALSE)
+  }
+
+  require_covariates(data, X_vars)
 
   wtd_mean <- function(x, w) sum(x * w) / sum(w)
   wtd_var <- function(x, w) {
@@ -117,19 +179,21 @@ compute_weighted_balance <- function(data, weights, X_vars = paste0("X", 1:10),
     do.call(rbind, lapply(X_vars, function(v) {
       m_a <- wtd_mean(x_anchor[[v]], w_anchor); m_g <- wtd_mean(x_g[[v]], w_g)
       var_a <- wtd_var(x_anchor[[v]], w_anchor); var_g <- wtd_var(x_g[[v]], w_g)
-      smd <- (m_g - m_a) / sqrt((var_a + var_g) / 2)
-      data.frame(group = g, covariate = v, smd = smd, abs_smd = abs(smd))
+
+      # Anchor minus group, matching compute_smd_balance(). Same guard as
+      # there: see summarize_smd().
+      pooled_sd <- sqrt((var_a + var_g) / 2)
+      defined <- isTRUE(is.finite(pooled_sd) && pooled_sd > 0)
+      smd <- if (defined) (m_a - m_g) / pooled_sd else 0
+
+      data.frame(group = g, covariate = v, smd = smd, abs_smd = abs(smd),
+                 smd_defined = defined)
     }))
   })
   by_covariate <- do.call(rbind, rows)
   rownames(by_covariate) <- NULL
 
-  summary_rows <- lapply(groups, function(g) {
-    vals <- by_covariate$abs_smd[by_covariate$group == g]
-    data.frame(group = g, mean_abs_smd = mean(vals), max_abs_smd = max(vals))
-  })
-  summary_df <- do.call(rbind, summary_rows)
-  rownames(summary_df) <- NULL
+  summary_df <- summarize_smd(by_covariate, groups)
 
   list(by_covariate = by_covariate, summary = summary_df)
 }
@@ -149,7 +213,7 @@ compute_weighted_balance <- function(data, weights, X_vars = paste0("X", 1:10),
 #' @export
 compute_effective_sample_size <- function(data, weights, treatment_var = "T") {
   stopifnot(length(weights) == nrow(data))
-  treat_chr <- as.character(data[[treatment_var]])
+  treat_chr <- treatment_labels(data, treatment_var)
   groups <- unique(treat_chr)
   rows <- lapply(groups, function(g) {
     w <- weights[treat_chr == g]
@@ -173,8 +237,9 @@ compute_effective_sample_size <- function(data, weights, treatment_var = "T") {
 #'
 #' @return A list with elements `weights` (from
 #'   [compute_balancing_weights()]), `balance` (from
-#'   [compute_weighted_balance()]), and `ess` (from
-#'   [compute_effective_sample_size()]).
+#'   [compute_weighted_balance()]), `ess` (from
+#'   [compute_effective_sample_size()]), and `n_trimmed`, surfaced from the
+#'   weighting step as a positivity diagnostic.
 #'
 #' @examples
 #' data(sample_4group)
@@ -199,13 +264,13 @@ compute_effective_sample_size <- function(data, weights, treatment_var = "T") {
 evaluate_comparator_weighting <- function(data, method = c("iptw", "overlap", "matching"),
                                            gps = NULL, X_vars = paste0("X", 1:10),
                                            treatment_var = "T", anchor_level = "A",
-                                           stabilize = TRUE) {
+                                           stabilize = TRUE, trim = 1e-3) {
   method <- match.arg(method)
   w <- compute_balancing_weights(data, method = method, gps = gps, X_vars = X_vars,
                                   treatment_var = treatment_var, anchor_level = anchor_level,
-                                  stabilize = stabilize)
+                                  stabilize = stabilize, trim = trim)
   balance <- compute_weighted_balance(data, w$weights, X_vars = X_vars,
                                        treatment_var = treatment_var, anchor_level = anchor_level)
   ess <- compute_effective_sample_size(data, w$weights, treatment_var = treatment_var)
-  list(weights = w, balance = balance, ess = ess)
+  list(weights = w, balance = balance, ess = ess, n_trimmed = w$n_trimmed)
 }

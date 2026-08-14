@@ -11,7 +11,8 @@ compute_balancing_weights(
   X_vars = paste0("X", 1:10),
   treatment_var = "T",
   anchor_level = "A",
-  stabilize = TRUE
+  stabilize = TRUE,
+  trim = 0.001
 )
 }
 \arguments{
@@ -32,11 +33,22 @@ empirical marginal treatment prevalence (Robins et al., 2000).
 Ignored for `method %in% c("overlap", "matching")`, which are already
 bounded and do not use this stabilization (see file header). Default
 `TRUE`.}
+
+\item{trim}{Lower bound applied to the generalized propensity scores before
+dividing by them, in `[0, 1)`; `0` disables it. Scores are clipped at
+`trim` and renormalized to sum to one. Because the GPS model is fitted
+without regularization, near-separation can drive a score toward zero and
+the resulting weight either dominates every downstream summary or becomes
+an infinity that propagates silently. Default `1e-3`.}
 }
 \value{
 A list with elements `weights` (numeric vector, length
   `nrow(data)`), `h` (the tilting-function value per subject), `method`,
-  and `gps` (the GPS matrix used).
+  `gps` (the GPS matrix supplied or estimated, before trimming), and
+  `n_trimmed` (the number of subjects with at least one score below `trim`).
+  `n_trimmed` doubles as a positivity diagnostic: a nonzero count means the
+  data contain subjects with near-zero probability of a treatment they could
+  have received.
 }
 \description{
 Computes IPTW, overlap weights, or matching weights from generalized

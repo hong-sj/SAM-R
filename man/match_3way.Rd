@@ -8,12 +8,13 @@ match_3way(
   data,
   search,
   gps,
-  X_vars = paste0("X", 1:10),
+  X_vars = NULL,
   treatment_var = "T",
   caliper = "auto",
-  ps_space = c("raw", "logit"),
+  gps_space = c("raw", "logit"),
   top_n = 10L,
-  reference_level = NULL
+  reference_level = NULL,
+  ps_space = NULL
 )
 }
 \arguments{
@@ -24,22 +25,26 @@ anchor and comparator treatment groups.}
 
 \item{gps}{Numeric matrix of generalized propensity scores.}
 
-\item{X_vars}{Character vector of covariate names. Retained for
-compatibility with [sam_match()]. Default `paste0("X", 1:10)`.}
+\item{X_vars}{Ignored, and warned about if supplied. Accepted only so that
+a call written for [sam_match()] fails loudly rather than silently
+matching on something else: this algorithm works in propensity score
+space and never looks at covariates.}
 
 \item{treatment_var}{Name of the treatment variable. Default `"T"`.}
 
 \item{caliper}{Numeric caliper or `"auto"` to estimate it from the data.
 Default `"auto"`.}
 
-\item{ps_space}{Propensity score scale used for matching, either `"raw"`
-or `"logit"`. Default `"raw"`.}
+\item{gps_space}{Propensity score scale used for matching, either `"raw"`
+or `"logit"`. Default `"raw"`. Named to match [gps_candidate_search()].}
 
 \item{top_n}{Maximum number of candidate trios retained per subject.
-Default `10`.}
+Must be a positive integer. Default `10`.}
 
 \item{reference_level}{Treatment group used as the propensity score
 reference. If `NULL`, the last treatment level is used.}
+
+\item{ps_space}{Deprecated alias for `gps_space`.}
 }
 \value{
 A list containing:
@@ -49,6 +54,8 @@ A list containing:
     \item{unmatched_anchor_rows}{Row indices of unmatched anchor subjects.}
     \item{matching_rate}{Proportion of anchor subjects included in
       matched trios.}
+    \item{max_possible_rate}{The highest rate the group sizes allow; see
+      [sam_match()].}
     \item{caliper}{Caliper value used for matching.}
     \item{red_level}{Smallest treatment group used as the matching base.}
     \item{reference_level}{Treatment group used as the propensity score

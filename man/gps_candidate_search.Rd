@@ -24,7 +24,7 @@ per subject and one column per treatment group.}
 \item{anchor_level}{Anchor treatment group. Default `"A"`.}
 
 \item{top_m}{Number of candidates retained per anchor and comparator group.
-Default `10`.}
+Must be a positive integer. Default `10`.}
 
 \item{gps_space}{GPS scale used to calculate Euclidean distance.
 Either `"raw"` or `"logit"`. Default `"raw"`.}
@@ -36,6 +36,16 @@ A list with:
     \item{groups}{Comparator treatment groups.}
     \item{candidates}{Candidate row indices for each anchor and
       comparator group.}
+    \item{fingerprint}{Identifies the exact frame, in the exact row order,
+      that the search ran on. Every later stage verifies it, because
+      matched sets are stored as positional row indices: re-sorting,
+      filtering or rewriting `data` in between would silently repoint them
+      at other subjects. Adding a column, such as an outcome, is still
+      allowed.}
+    \item{gps_fingerprint}{Identifies the GPS matrix the candidate pools
+      were selected against, so that a later stage handed a different one
+      fails rather than reporting diagnostics for scores that never
+      produced the match.}
   }
 }
 \description{

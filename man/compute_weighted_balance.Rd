@@ -21,9 +21,14 @@ compute_weighted_balance(
 }
 \value{
 A list with `by_covariate` and `summary` data frames, in the
-  same shape as [compute_smd_balance()]'s return value.
+  same shape as [compute_smd_balance()]'s return value. `by_covariate`
+  additionally carries `abs_smd`, and both carry the `smd_defined` flag and
+  `n_undefined` count described there.
 }
 \description{
 Computes weighted standardized mean differences (SMDs) between the anchor
 group and each comparator group for all covariates in `X_vars`.
+
+SMDs are reported as anchor minus comparator, the same orientation as
+[compute_smd_balance()], so the two tables can be read side by side.
 }

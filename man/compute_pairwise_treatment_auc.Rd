@@ -4,7 +4,12 @@
 \alias{compute_pairwise_treatment_auc}
 \title{Pairwise treatment-discrimination AUC}
 \usage{
-compute_pairwise_treatment_auc(gps, matched, groups, anchor_level)
+compute_pairwise_treatment_auc(
+  gps,
+  matched,
+  groups = NULL,
+  anchor_level = NULL
+)
 }
 \arguments{
 \item{gps}{Numeric matrix of generalized propensity scores.}
@@ -12,9 +17,11 @@ compute_pairwise_treatment_auc(gps, matched, groups, anchor_level)
 \item{matched}{Matched-set data returned by [sam_match()] or
 [match_3way()].}
 
-\item{groups}{Character vector of comparator treatment groups.}
+\item{groups}{Character vector of comparator treatment groups. If `NULL`,
+inferred from the columns of `matched`.}
 
-\item{anchor_level}{Anchor treatment group.}
+\item{anchor_level}{Anchor treatment group. If `NULL`, inferred as the GPS
+column that is not a comparator group.}
 }
 \value{
 A list containing:

@@ -4,7 +4,7 @@
 \alias{compute_smd_balance}
 \title{Standardized mean difference balance}
 \usage{
-compute_smd_balance(data, matched, X_vars, groups)
+compute_smd_balance(data, matched, X_vars = paste0("X", 1:10), groups = NULL)
 }
 \arguments{
 \item{data}{A `data.frame` containing the covariates.}
@@ -12,15 +12,21 @@ compute_smd_balance(data, matched, X_vars, groups)
 \item{matched}{Matched-set data returned by [sam_match()] or
 [match_3way()].}
 
-\item{X_vars}{Character vector of covariate column names.}
+\item{X_vars}{Character vector of covariate column names.
+Default `paste0("X", 1:10)`.}
 
-\item{groups}{Character vector of comparator treatment groups.}
+\item{groups}{Character vector of comparator treatment groups. If `NULL`,
+inferred from the columns of `matched`.}
 }
 \value{
 A list containing:
   \describe{
-    \item{by_covariate}{SMD for each covariate and comparator group.}
-    \item{summary}{Mean and maximum absolute SMD for each comparator group.}
+    \item{by_covariate}{SMD for each covariate and comparator group,
+      computed as anchor minus comparator, with its absolute value and an
+      `smd_defined` flag that is `FALSE` when a covariate has no variance in
+      either arm and its SMD is therefore undefined.}
+    \item{summary}{Mean and maximum absolute SMD for each comparator group,
+      computed over the assessable covariates only, plus `n_undefined`.}
   }
 }
 \description{

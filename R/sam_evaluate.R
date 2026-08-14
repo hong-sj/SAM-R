@@ -79,10 +79,14 @@
 #' @export
 sam_evaluate <- function(data, search, match_result, gps,
                           X_vars = paste0("X", 1:10), treatment_var = "T") {
-  groups <- search$groups
+  groups <- as.character(search$groups)
   matched <- match_result$matched
 
-  anchor_level <- as.character(unique(data[[treatment_var]][search$anchor_rows]))
+  check_fingerprint(search, data, treatment_var)
+  gps <- validate_gps(data, gps, treatment_var, "sam_evaluate")
+  check_gps_fingerprint(search, gps)
+  labels <- treatment_labels(data, treatment_var)
+  anchor_level <- unique(labels[search$anchor_rows])
   stopifnot(length(anchor_level) == 1)
 
   # Summarize a matched-set distance metric
@@ -189,14 +193,12 @@ extract_matched_data <- function(data, search, match_result,
                                      treatment_var = "T",
                                      anchor_level = NULL) {
   matched <- match_result$matched
-  groups <- search$groups
+  groups <- as.character(search$groups)
 
-  if (!is.data.frame(data)) {
-    stop("`data` must be a data.frame.")
-  }
-  if (!(treatment_var %in% names(data))) {
-    stop("Treatment column not found: ", treatment_var)
-  }
+  check_fingerprint(search, data, treatment_var)
+  labels <- treatment_labels(data, treatment_var)
+  anchor_level <- treatment_level(anchor_level)
+
   if (is.null(matched) || nrow(matched) == 0L) {
     stop("`match_result` contains no matched sets.")
   }
@@ -209,9 +211,7 @@ extract_matched_data <- function(data, search, match_result,
   }
 
   if (is.null(anchor_level)) {
-    anchor_level <- unique(
-      as.character(data[[treatment_var]][search$anchor_rows])
-    )
+    anchor_level <- unique(labels[search$anchor_rows])
     if (length(anchor_level) != 1L) {
       stop("Could not uniquely determine `anchor_level` from ",
            "`search$anchor_rows`.")
@@ -228,23 +228,21 @@ extract_matched_data <- function(data, search, match_result,
     set_ids <- seq_len(nrow(matched))
   }
 
-  # Expand each K-way matched set into K subject-level records
-  matched_index <- do.call(
-    rbind,
-    lapply(seq_len(nrow(matched)), function(i) {
-      subject_rows <- as.integer(
-        unlist(
-          matched[i, c("anchor", groups), drop = FALSE],
-          use.names = FALSE
-        )
-      )
-      data.frame(
-        matched_set_id = set_ids[i],
-        matched_role = c(anchor_level, groups),
-        original_row = subject_rows,
-        stringsAsFactors = FALSE
-      )
-    })
+  # Expand each K-way matched set into K subject-level records.
+  # Transposing gives the row indices in set-major order -- set 1's K subjects,
+  # then set 2's -- which is the layout the roles below are recycled against.
+  # Building one data frame per set and rbind-ing them is quadratic in the
+  # number of sets.
+  roles <- c(anchor_level, groups)
+  subject_rows <- as.integer(t(
+    as.matrix(matched[, c("anchor", groups), drop = FALSE])
+  ))
+
+  matched_index <- data.frame(
+    matched_set_id = rep(set_ids, each = length(roles)),
+    matched_role = rep(roles, times = nrow(matched)),
+    original_row = subject_rows,
+    stringsAsFactors = FALSE
   )
 
   if (anyNA(matched_index$original_row) ||
@@ -262,7 +260,7 @@ extract_matched_data <- function(data, search, match_result,
   matched_data <- matched_data[
     order(
       matched_data$matched_set_id,
-      match(as.character(matched_data[[treatment_var]]), treatment_order)
+      match(labels[matched_index$original_row], treatment_order)
     ),
     , drop = FALSE
   ]
@@ -387,7 +385,9 @@ extract_matched_data <- function(data, search, match_result,
 #'     \item{analysis_summary}{Matched-cohort summary.}
 #'     \item{group_risk}{Observed risk estimates by treatment group.}
 #'     \item{contrasts}{Comparator-versus-anchor OR, RR, and RD estimates
-#'       with confidence intervals.}
+#'       with confidence intervals, and a `separation` flag marking rows whose
+#'       odds ratio is unreliable because one of the two arms has no events or
+#'       no non-events.}
 #'     \item{model}{Fitted logistic regression model.}
 #'     \item{vcov_cluster}{Matched-set cluster-robust covariance matrix.}
 #'   }
@@ -469,15 +469,34 @@ sam_estimate_effects <- function(matched_data, outcome_var,
     stop("`outcome_var` must be binary and coded as 0/1.")
   }
 
-  # Restrict the analysis to complete outcome, treatment, and set-ID records
-  complete <- stats::complete.cases(
+  # Restrict the analysis to complete matched *sets*. Dropping individual rows
+  # would leave a set with fewer than K members in the analysis, which breaks
+  # the 1:1:...:1 structure that the matched-set cluster-robust variance and
+  # the group comparison both assume.
+  row_complete <- stats::complete.cases(
     matched_data[, required_cols, drop = FALSE]
   )
-  analysis_data <- matched_data[complete, , drop = FALSE]
-  analysis_data[[outcome_var]] <- as.integer(analysis_data[[outcome_var]])
+  incomplete_sets <- unique(matched_data[[set_id_var]][!row_complete])
+  analysis_data <- matched_data[
+    !(matched_data[[set_id_var]] %in% incomplete_sets), , drop = FALSE
+  ]
+
   if (nrow(analysis_data) == 0L) {
-    stop("No complete observations are available for outcome analysis.")
+    stop("No complete matched sets are available for outcome analysis.")
   }
+
+  expected_size <- attr(matched_data, "K")
+  if (is.null(expected_size)) {
+    expected_size <- length(unique(as.character(matched_data[[treatment_var]])))
+  }
+  retained_sizes <- table(analysis_data[[set_id_var]])
+  if (any(retained_sizes != expected_size)) {
+    stop("Outcome analysis contains incomplete matched sets: ",
+         sum(retained_sizes != expected_size), " of ", length(retained_sizes),
+         " do not have ", expected_size, " subjects.", call. = FALSE)
+  }
+
+  analysis_data[[outcome_var]] <- as.integer(analysis_data[[outcome_var]])
 
   if (is.null(anchor_level)) {
     anchor_level <- attr(matched_data, "anchor_level")
@@ -486,6 +505,7 @@ sam_estimate_effects <- function(matched_data, outcome_var,
     stop("`anchor_level` must be supplied or available as an attribute ",
          "from `extract_matched_data()`.")
   }
+  anchor_level <- treatment_level(anchor_level)
 
   treatment_levels <- unique(
     as.character(analysis_data[[treatment_var]])
@@ -498,6 +518,7 @@ sam_estimate_effects <- function(matched_data, outcome_var,
   # whenever possible; otherwise retain observed order.
   stored_groups <- attr(matched_data, "groups")
   if (!is.null(stored_groups)) {
+    stored_groups <- as.character(stored_groups)
     comparator_levels <- stored_groups[stored_groups %in% treatment_levels]
   } else {
     comparator_levels <- setdiff(treatment_levels, anchor_level)
@@ -507,6 +528,28 @@ sam_estimate_effects <- function(matched_data, outcome_var,
     analysis_data[[treatment_var]],
     levels = c(anchor_level, comparator_levels)
   )
+
+  # A treatment group with no events, or no non-events, separates the
+  # treatment-only model completely. glm() reports converged = TRUE for such a
+  # fit -- it stops on its deviance tolerance having pushed the coefficient
+  # toward infinity -- so the convergence check below never fires. The affected
+  # rows are flagged as well as warned about, so callers filtering results
+  # programmatically have something to test.
+  separated_levels <- character(0)
+
+  for (level in c(anchor_level, comparator_levels)) {
+    outcomes <- analysis_data[[outcome_var]][
+      as.character(analysis_data[[treatment_var]]) == level
+    ]
+    if (length(outcomes) > 0L &&
+        (sum(outcomes) == 0L || sum(outcomes) == length(outcomes))) {
+      separated_levels <- c(separated_levels, level)
+      warning("Treatment group '", level, "' has ", sum(outcomes), "/",
+              length(outcomes), " events. The treatment-only logistic model ",
+              "may exhibit complete separation and OR inference may be ",
+              "unstable.", call. = FALSE)
+    }
+  }
 
   # Fit the unadjusted treatment-outcome model
   effect_formula <- stats::reformulate(
@@ -643,6 +686,8 @@ sam_estimate_effects <- function(matched_data, outcome_var,
       se_RD = se_RD,
       RD_ci_low = RD_ci_low,
       RD_ci_high = RD_ci_high,
+      separation = anchor_level %in% separated_levels ||
+        g %in% separated_levels,
       stringsAsFactors = FALSE
     )
   })

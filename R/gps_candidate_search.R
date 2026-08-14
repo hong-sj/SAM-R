@@ -18,7 +18,7 @@
 #' @param treatment_var Name of the treatment variable. Default `"T"`.
 #' @param anchor_level Anchor treatment group. Default `"A"`.
 #' @param top_m Number of candidates retained per anchor and comparator group.
-#'   Default `10`.
+#'   Must be a positive integer. Default `10`.
 #' @param gps_space GPS scale used to calculate Euclidean distance.
 #'   Either `"raw"` or `"logit"`. Default `"raw"`.
 #'
@@ -28,6 +28,16 @@
 #'     \item{groups}{Comparator treatment groups.}
 #'     \item{candidates}{Candidate row indices for each anchor and
 #'       comparator group.}
+#'     \item{fingerprint}{Identifies the exact frame, in the exact row order,
+#'       that the search ran on. Every later stage verifies it, because
+#'       matched sets are stored as positional row indices: re-sorting,
+#'       filtering or rewriting `data` in between would silently repoint them
+#'       at other subjects. Adding a column, such as an outcome, is still
+#'       allowed.}
+#'     \item{gps_fingerprint}{Identifies the GPS matrix the candidate pools
+#'       were selected against, so that a later stage handed a different one
+#'       fails rather than reporting diagnostics for scores that never
+#'       produced the match.}
 #'   }
 #'
 #' @examples
@@ -62,36 +72,102 @@
 gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = "A",
                                   top_m = 10, gps_space = c("raw", "logit")) {
   gps_space <- match.arg(gps_space)
-  stopifnot(treatment_var %in% names(data), nrow(gps) == nrow(data))
+  top_m <- require_positive_int(top_m, "top_m")
+  labels <- treatment_labels(data, treatment_var)
+  anchor_level <- treatment_level(anchor_level)
+  gps <- validate_gps(data, gps, treatment_var, "gps_candidate_search")
 
-  # Transform GPS values to the logit scale if requested
-  if (gps_space == "logit") {
-    eps <- 1e-6
-    gps_used <- stats::qlogis(pmin(pmax(gps, eps), 1 - eps))
-  } else {
-    gps_used <- gps
+  if (!(anchor_level %in% colnames(gps))) {
+    stop("`anchor_level` \"", anchor_level, "\" is not a column of `gps`. ",
+         "GPS columns: ",
+         paste0("\"", colnames(gps), "\"", collapse = ", "), ".",
+         call. = FALSE)
   }
 
+  gps_used <- transform_ps(gps, gps_space)
+
   groups <- setdiff(colnames(gps), anchor_level)
-  anchor_rows <- which(data[[treatment_var]] == anchor_level)
+  anchor_rows <- require_rows(which(labels == anchor_level), anchor_level,
+                              treatment_var, available = labels)
   X_anchor <- gps_used[anchor_rows, , drop = FALSE]
 
-  # Compute Euclidean GPS distances for each comparator group
+  # Find the nearest candidates in each comparator group.
+  #
+  # A k-d tree query replaces the full anchor-by-comparator distance matrix,
+  # which allocated the product of the two group sizes -- 1.3 GB at n = 20,000
+  # -- and then fully sorted every row to keep top_m of it.
   candidates_by_group <- lapply(groups, function(g) {
-    group_rows <- which(data[[treatment_var]] == g)
+    group_rows <- require_rows(which(labels == g), g, treatment_var,
+                               available = labels)
     X_group <- gps_used[group_rows, , drop = FALSE]
+    n_group <- length(group_rows)
+    n_anchor <- nrow(X_anchor)
+    m <- min(top_m, n_group)
 
-    x_sq <- rowSums(X_anchor^2)
-    y_sq <- rowSums(X_group^2)
-    cross <- X_anchor %*% t(X_group)
-    d2 <- outer(x_sq, y_sq, "+") - 2 * cross
+    # One neighbour beyond the cutoff, so a tie straddling it is detectable.
+    k_query <- min(m + 1L, n_group)
+    neighbours <- RANN::nn2(data = X_group, query = X_anchor, k = k_query)
+
+    # The tree's own distances are not used for ordering. ANN accumulates a
+    # distance along the path it took to reach a point, so two points at
+    # identical coordinates can come back differing in the last bit, and
+    # sorting on that would follow the traversal rather than the row order the
+    # full-matrix implementation used. Distances are recomputed here with that
+    # implementation's formula, for every returned pair in one pass.
+    anchor_sq <- rowSums(X_anchor^2)
+    group_sq <- rowSums(X_group^2)
+
+    flat_anchor <- rep(seq_len(n_anchor), times = k_query)
+    flat_candidate <- as.integer(neighbours$nn.idx)
+
+    # Accumulated one column at a time. Subsetting both matrices by the pair
+    # lists instead would materialise two copies the size of the screened set,
+    # where this holds one vector of that length.
+    cross <- numeric(length(flat_candidate))
+    for (k in seq_len(ncol(X_anchor))) {
+      cross <- cross + X_anchor[flat_anchor, k] * X_group[flat_candidate, k]
+    }
+
+    d2 <- anchor_sq[flat_anchor] + group_sq[flat_candidate] - 2 * cross
     d2[d2 < 0] <- 0
-    dist_mat <- sqrt(d2)
+    flat_distance <- sqrt(d2)
 
-    m <- min(top_m, length(group_rows))
-    lapply(seq_len(nrow(dist_mat)), function(i) {
-      group_rows[order(dist_mat[i, ])[seq_len(m)]]
-    })
+    # Rank every anchor's neighbours in one pass. Ordering by
+    # (anchor, distance, candidate) groups the rows by anchor and sorts within
+    # each, so the per-anchor order() this replaces -- which was most of the
+    # function once the tree query itself came down to a fifth of it -- becomes
+    # a single call.
+    ranked <- order(flat_anchor, flat_distance, flat_candidate)
+    sorted_candidate <- matrix(flat_candidate[ranked], n_anchor, k_query,
+                               byrow = TRUE)
+    sorted_distance <- matrix(flat_distance[ranked], n_anchor, k_query,
+                              byrow = TRUE)
+
+    # More candidates may be tied at the cutoff than there are slots left, in
+    # which case the tree returned an arbitrary subset of them.
+    contested <- if (k_query > m) {
+      sorted_distance[, k_query] <= sorted_distance[, m] * (1 + .SAM_TIE_TOL)
+    } else {
+      rep(FALSE, n_anchor)
+    }
+
+    kept <- sorted_candidate[, seq_len(m), drop = FALSE]
+    pools <- unname(split(group_rows[t(kept)],
+                          rep(seq_len(n_anchor), each = m)))
+
+    # Contested anchors are re-resolved against every candidate in the group.
+    for (i in which(contested)) {
+      cross <- numeric(n_group)
+      for (k in seq_len(ncol(X_group))) {
+        cross <- cross + X_group[, k] * X_anchor[i, k]
+      }
+
+      all_d2 <- anchor_sq[i] + group_sq - 2 * cross
+      all_d2[all_d2 < 0] <- 0
+      pools[[i]] <- group_rows[order(sqrt(all_d2), seq_len(n_group))[seq_len(m)]]
+    }
+
+    pools
   })
   names(candidates_by_group) <- groups
 
@@ -100,5 +176,14 @@ gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = 
     stats::setNames(lapply(groups, function(g) candidates_by_group[[g]][[i]]), groups)
   })
 
-  list(anchor_rows = anchor_rows, groups = groups, candidates = candidates)
+  list(
+    anchor_rows = anchor_rows,
+    groups = groups,
+    candidates = candidates,
+    # Matched sets are stored as positional row indices, so every later stage
+    # needs this exact frame in this exact row order, and the GPS the pools
+    # were selected against.
+    fingerprint = data_fingerprint(data, treatment_var),
+    gps_fingerprint = gps_fingerprint(gps)
+  )
 }

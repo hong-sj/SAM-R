@@ -26,6 +26,11 @@ A list containing:
       could not be matched.}
     \item{matching_rate}{Proportion of anchor subjects successfully
       matched.}
+    \item{max_possible_rate}{The highest rate the group sizes allow. Each
+      matched set consumes one subject from every comparator group, so the
+      rate is capped by the smallest comparator group over the anchor
+      count. Reported alongside `matching_rate` so that a rate which looks
+      low can be recognised as saturated.}
   }
 }
 \description{

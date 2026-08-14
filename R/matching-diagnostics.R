@@ -15,12 +15,18 @@
 #' @param matched Matched-set data returned by [sam_match()] or
 #'   [match_3way()].
 #' @param X_vars Character vector of covariate column names.
-#' @param groups Character vector of comparator treatment groups.
+#'   Default `paste0("X", 1:10)`.
+#' @param groups Character vector of comparator treatment groups. If `NULL`,
+#'   inferred from the columns of `matched`.
 #'
 #' @return A list containing:
 #'   \describe{
-#'     \item{by_covariate}{SMD for each covariate and comparator group.}
-#'     \item{summary}{Mean and maximum absolute SMD for each comparator group.}
+#'     \item{by_covariate}{SMD for each covariate and comparator group,
+#'       computed as anchor minus comparator, with its absolute value and an
+#'       `smd_defined` flag that is `FALSE` when a covariate has no variance in
+#'       either arm and its SMD is therefore undefined.}
+#'     \item{summary}{Mean and maximum absolute SMD for each comparator group,
+#'       computed over the assessable covariates only, plus `n_undefined`.}
 #'   }
 #'
 #' @examples
@@ -65,29 +71,98 @@
 #' balance$summary
 #'
 #' @export
-compute_smd_balance <- function(data, matched, X_vars, groups) {
+compute_smd_balance <- function(data, matched, X_vars = paste0("X", 1:10),
+                                groups = NULL) {
+  require_covariates(data, X_vars)
+  groups <- if (is.null(groups)) {
+    groups_from_matched(matched)
+  } else {
+    as.character(groups)
+  }
+
+  # A match that formed no sets is a legitimate outcome -- match_3way() with a
+  # tight caliper produces one. Reporting it as covariates that could not be
+  # assessed would send "nothing matched" and "this covariate is constant"
+  # through the same channel; they are different findings.
+  if (nrow(matched) == 0L) {
+    return(list(
+      by_covariate = data.frame(
+        group = character(0), covariate = character(0), smd = numeric(0),
+        abs_smd = numeric(0), smd_defined = logical(0),
+        stringsAsFactors = FALSE
+      ),
+      summary = data.frame(
+        group = groups,
+        mean_abs_smd = NA_real_,
+        max_abs_smd = NA_real_,
+        n_undefined = 0L,
+        stringsAsFactors = FALSE
+      )
+    ))
+  }
+
+  x_anchor <- data[matched$anchor, X_vars, drop = FALSE]
+
   rows <- list()
   for (g in groups) {
-    x_anchor <- data[matched$anchor, X_vars, drop = FALSE]
     x_g <- data[matched[[g]], X_vars, drop = FALSE]
     for (v in X_vars) {
       mean_a <- mean(x_anchor[[v]]); mean_g <- mean(x_g[[v]])
       var_a <- stats::var(x_anchor[[v]]); var_g <- stats::var(x_g[[v]])
-      smd <- (mean_a - mean_g) / sqrt((var_a + var_g) / 2)
-      rows[[length(rows) + 1]] <- data.frame(group = g, covariate = v, smd = smd)
+
+      # A covariate with no variance in either arm has no defined SMD.
+      # Reporting 0 keeps it out of the summary statistics without emitting a
+      # NaN, which propagates through mean() and max() and would otherwise
+      # take the whole summary down with it.
+      pooled_sd <- sqrt((var_a + var_g) / 2)
+      defined <- isTRUE(is.finite(pooled_sd) && pooled_sd > 0)
+      smd <- if (defined) (mean_a - mean_g) / pooled_sd else 0
+
+      rows[[length(rows) + 1]] <- data.frame(
+        group = g, covariate = v, smd = smd, abs_smd = abs(smd),
+        smd_defined = defined
+      )
     }
   }
   by_covariate <- do.call(rbind, rows)
   rownames(by_covariate) <- NULL
 
+  summary_df <- summarize_smd(by_covariate, groups)
+
+  list(by_covariate = by_covariate, summary = summary_df)
+}
+
+
+#' Summarize a per-covariate SMD table
+#'
+#' Shared by [compute_smd_balance()] and [compute_weighted_balance()] so that
+#' both report the same columns under the same rules. Covariates that could not
+#' be assessed are excluded from the mean and the maximum and counted in
+#' `n_undefined`, so a degenerate covariate is visible rather than either
+#' hidden or fatal.
+#'
+#' @param by_covariate A data frame with `group`, `smd` and `smd_defined`.
+#' @param groups Character vector of comparator groups, in output order.
+#'
+#' @return A data frame with one row per group.
+#'
+#' @keywords internal
+#' @noRd
+summarize_smd <- function(by_covariate, groups) {
   summary_rows <- lapply(groups, function(g) {
-    vals <- abs(by_covariate$smd[by_covariate$group == g])
-    data.frame(group = g, mean_abs_smd = mean(vals), max_abs_smd = max(vals))
+    in_group <- by_covariate$group == g
+    values <- abs(by_covariate$smd[in_group & by_covariate$smd_defined])
+
+    data.frame(
+      group = g,
+      mean_abs_smd = if (length(values) > 0L) mean(values) else NA_real_,
+      max_abs_smd = if (length(values) > 0L) max(values) else NA_real_,
+      n_undefined = sum(in_group & !by_covariate$smd_defined)
+    )
   })
   summary_df <- do.call(rbind, summary_rows)
   rownames(summary_df) <- NULL
-
-  list(by_covariate = by_covariate, summary = summary_df)
+  summary_df
 }
 
 #' Pairwise treatment-discrimination AUC
@@ -100,8 +175,10 @@ compute_smd_balance <- function(data, matched, X_vars, groups) {
 #' @param gps Numeric matrix of generalized propensity scores.
 #' @param matched Matched-set data returned by [sam_match()] or
 #'   [match_3way()].
-#' @param groups Character vector of comparator treatment groups.
-#' @param anchor_level Anchor treatment group.
+#' @param groups Character vector of comparator treatment groups. If `NULL`,
+#'   inferred from the columns of `matched`.
+#' @param anchor_level Anchor treatment group. If `NULL`, inferred as the GPS
+#'   column that is not a comparator group.
 #'
 #' @return A list containing:
 #'   \describe{
@@ -152,7 +229,32 @@ compute_smd_balance <- function(data, matched, X_vars, groups) {
 #' auc$mean_auc
 #'
 #' @export
-compute_pairwise_treatment_auc <- function(gps, matched, groups, anchor_level) {
+compute_pairwise_treatment_auc <- function(gps, matched, groups = NULL,
+                                           anchor_level = NULL) {
+  groups <- if (is.null(groups)) {
+    groups_from_matched(matched)
+  } else {
+    as.character(groups)
+  }
+
+  if (is.null(anchor_level)) {
+    # The GPS column that is not a comparator group is the anchor.
+    anchor_level <- setdiff(colnames(gps), groups)
+    if (length(anchor_level) != 1L) {
+      stop("Could not infer `anchor_level` from the GPS columns; pass it ",
+           "explicitly.", call. = FALSE)
+    }
+  }
+  anchor_level <- treatment_level(anchor_level)
+
+  if (nrow(matched) == 0L) {
+    return(list(
+      pairwise = data.frame(group_1 = character(0), group_2 = character(0),
+                            auc = numeric(0), stringsAsFactors = FALSE),
+      mean_auc = NA_real_
+    ))
+  }
+
   all_levels <- c(anchor_level, groups)
   rows_by_level <- stats::setNames(
     lapply(all_levels, function(g) if (g == anchor_level) matched$anchor else matched[[g]]),
