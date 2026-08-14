@@ -120,42 +120,54 @@ gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = 
     flat_anchor <- rep(seq_len(n_anchor), times = k_query)
     flat_candidate <- as.integer(neighbours$nn.idx)
 
-    d2 <- anchor_sq[flat_anchor] + group_sq[flat_candidate] -
-      2 * rowSums(X_anchor[flat_anchor, , drop = FALSE] *
-                    X_group[flat_candidate, , drop = FALSE])
+    # Accumulated one column at a time. Subsetting both matrices by the pair
+    # lists instead would materialise two copies the size of the screened set,
+    # where this holds one vector of that length.
+    cross <- numeric(length(flat_candidate))
+    for (k in seq_len(ncol(X_anchor))) {
+      cross <- cross + X_anchor[flat_anchor, k] * X_group[flat_candidate, k]
+    }
+
+    d2 <- anchor_sq[flat_anchor] + group_sq[flat_candidate] - 2 * cross
     d2[d2 < 0] <- 0
-    exact <- matrix(sqrt(d2), nrow = n_anchor, ncol = k_query)
+    flat_distance <- sqrt(d2)
 
-    lapply(seq_len(n_anchor), function(i) {
-      idx <- neighbours$nn.idx[i, ]
-      distance <- exact[i, ]
-      ranked <- order(distance, idx)
+    # Rank every anchor's neighbours in one pass. Ordering by
+    # (anchor, distance, candidate) groups the rows by anchor and sorts within
+    # each, so the per-anchor order() this replaces -- which was most of the
+    # function once the tree query itself came down to a fifth of it -- becomes
+    # a single call.
+    ranked <- order(flat_anchor, flat_distance, flat_candidate)
+    sorted_candidate <- matrix(flat_candidate[ranked], n_anchor, k_query,
+                               byrow = TRUE)
+    sorted_distance <- matrix(flat_distance[ranked], n_anchor, k_query,
+                              byrow = TRUE)
 
-      # More candidates may be tied at the cutoff than there are slots left, in
-      # which case the tree returned an arbitrary subset of them. Those anchors
-      # are re-resolved against every candidate in the group.
-      contested <- k_query > m &&
-        distance[ranked[k_query]] <= distance[ranked[m]] * (1 + .SAM_TIE_TOL)
+    # More candidates may be tied at the cutoff than there are slots left, in
+    # which case the tree returned an arbitrary subset of them.
+    contested <- if (k_query > m) {
+      sorted_distance[, k_query] <= sorted_distance[, m] * (1 + .SAM_TIE_TOL)
+    } else {
+      rep(FALSE, n_anchor)
+    }
 
-      if (contested) {
-        # Accumulated column by column rather than through `%*%`. A BLAS
-        # matrix-vector product may reduce different rows in different orders,
-        # depending on blocking and vector width, so two points at identical
-        # coordinates can come out differing in the last bit -- which is
-        # precisely what this branch exists to rule out. Summing explicitly
-        # gives every row the same accumulation order.
-        cross <- numeric(n_group)
-        for (k in seq_len(ncol(X_group))) {
-          cross <- cross + X_group[, k] * X_anchor[i, k]
-        }
+    kept <- sorted_candidate[, seq_len(m), drop = FALSE]
+    pools <- unname(split(group_rows[t(kept)],
+                          rep(seq_len(n_anchor), each = m)))
 
-        all_d2 <- anchor_sq[i] + group_sq - 2 * cross
-        all_d2[all_d2 < 0] <- 0
-        group_rows[order(sqrt(all_d2), seq_len(n_group))[seq_len(m)]]
-      } else {
-        group_rows[idx[ranked[seq_len(m)]]]
+    # Contested anchors are re-resolved against every candidate in the group.
+    for (i in which(contested)) {
+      cross <- numeric(n_group)
+      for (k in seq_len(ncol(X_group))) {
+        cross <- cross + X_group[, k] * X_anchor[i, k]
       }
-    })
+
+      all_d2 <- anchor_sq[i] + group_sq - 2 * cross
+      all_d2[all_d2 < 0] <- 0
+      pools[[i]] <- group_rows[order(sqrt(all_d2), seq_len(n_group))[seq_len(m)]]
+    }
+
+    pools
   })
   names(candidates_by_group) <- groups
 

@@ -89,6 +89,10 @@ sign change listed under "Breaking changes".
 
 ## Performance
 
+* `gps_candidate_search()` ranks every anchor's neighbours in one pass rather
+  than sorting each anchor's separately. Once the distance matrix was gone the
+  tree query was only a fifth of the function, the rest being per-anchor R
+  overhead; at n = 50,000 this is 0.61 s to 0.27 s.
 * `gps_candidate_search()` queries a k-d tree instead of building the full
   anchor-by-comparator distance matrix. At n = 20,000 this is 5.32 s / 1224 MB
   to 0.20 s / 33 MB; n = 100,000, previously not feasible, takes 1.12 s /
