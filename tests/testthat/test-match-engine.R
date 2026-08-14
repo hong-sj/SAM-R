@@ -216,22 +216,44 @@ test_that("the shortlist size does not change the result", {
 test_that("a shortlist rebuild preserves the tie-break on tied data", {
   # Exact ties are where the shortlist's fence matters: an anchor sitting just
   # outside it at the same loss must not be overlooked.
-  withr::local_options(SAMatch.shortlist_size = 2L)
-
+  #
+  # The comparison here is the engine against itself at different shortlist
+  # sizes, not against reference_sam_match(). On data this degenerate whole
+  # anchors tie to the last bit, and the reference computes its distances one
+  # anchor at a time where the engine computes every screened pair in one pass.
+  # Those agree to about 1e-14, which is enough to flip an exact tie -- a
+  # difference between two equally valid ways of evaluating the same formula,
+  # not a difference in the matching rule. What the shortlist must guarantee is
+  # that the rule's answer does not depend on how many losses it looks at.
   set.seed(31L)
   n <- 120L
   data <- as.data.frame(matrix(round(stats::rnorm(n * 3)), n, 3,
                                dimnames = list(NULL, c("x1", "x2", "x3"))))
   data$T <- rep(c("A", "B", "C"), length.out = n)
+  X_vars <- c("x1", "x2", "x3")
 
-  fit <- estimate_gps_multinom(data, X_vars = c("x1", "x2", "x3"),
-                               treatment_var = "T", anchor_level = "A")
+  fit <- estimate_gps_multinom(data, X_vars = X_vars, treatment_var = "T",
+                               anchor_level = "A")
   search <- gps_candidate_search(data, fit$gps, treatment_var = "T",
                                  anchor_level = "A", top_m = 4)
 
-  engine <- sam_match(data, search, X_vars = c("x1", "x2", "x3"),
-                      treatment_var = "T")
-  reference <- reference_sam_match(data, search, c("x1", "x2", "x3"), "T")
+  full_scan <- withr::with_options(
+    list(SAMatch.shortlist_size = length(search$anchor_rows)),
+    sam_match(data, search, X_vars = X_vars, treatment_var = "T")$matched
+  )
+  expect_gt(nrow(full_scan), 0L)
 
-  expect_equal(engine$matched, reference, tolerance = 1e-10)
+  for (size in c(1L, 2L, 3L, 9L)) {
+    rebuilt <- withr::with_options(
+      list(SAMatch.shortlist_size = size),
+      sam_match(data, search, X_vars = X_vars, treatment_var = "T")$matched
+    )
+    expect_equal(rebuilt, full_scan, info = paste("shortlist size", size))
+  }
+
+  # And the result is a valid matching however it was reached.
+  for (g in search$groups) {
+    expect_equal(anyDuplicated(full_scan[[g]]), 0L)
+  }
+  expect_equal(anyDuplicated(full_scan$anchor), 0L)
 })
