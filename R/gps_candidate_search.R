@@ -18,7 +18,7 @@
 #' @param treatment_var Name of the treatment variable. Default `"T"`.
 #' @param anchor_level Anchor treatment group. Default `"A"`.
 #' @param top_m Number of candidates retained per anchor and comparator group.
-#'   Default `10`.
+#'   Must be a positive integer. Default `10`.
 #' @param gps_space GPS scale used to calculate Euclidean distance.
 #'   Either `"raw"` or `"logit"`. Default `"raw"`.
 #'
@@ -62,6 +62,7 @@
 gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = "A",
                                   top_m = 10, gps_space = c("raw", "logit")) {
   gps_space <- match.arg(gps_space)
+  top_m <- require_positive_int(top_m, "top_m")
   stopifnot(treatment_var %in% names(data), nrow(gps) == nrow(data))
 
   # Transform GPS values to the logit scale if requested

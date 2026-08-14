@@ -24,7 +24,7 @@ per subject and one column per treatment group.}
 \item{anchor_level}{Anchor treatment group. Default `"A"`.}
 
 \item{top_m}{Number of candidates retained per anchor and comparator group.
-Default `10`.}
+Must be a positive integer. Default `10`.}
 
 \item{gps_space}{GPS scale used to calculate Euclidean distance.
 Either `"raw"` or `"logit"`. Default `"raw"`.}

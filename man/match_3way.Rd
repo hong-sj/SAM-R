@@ -36,7 +36,7 @@ Default `"auto"`.}
 or `"logit"`. Default `"raw"`.}
 
 \item{top_n}{Maximum number of candidate trios retained per subject.
-Default `10`.}
+Must be a positive integer. Default `10`.}
 
 \item{reference_level}{Treatment group used as the propensity score
 reference. If `NULL`, the last treatment level is used.}

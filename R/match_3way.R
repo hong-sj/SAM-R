@@ -114,7 +114,7 @@ kdtree_range <- function(node, coords, query, radius2, active) {
 #' @param ps_space Propensity score scale used for matching, either `"raw"`
 #'   or `"logit"`. Default `"raw"`.
 #' @param top_n Maximum number of candidate trios retained per subject.
-#'   Default `10`.
+#'   Must be a positive integer. Default `10`.
 #' @param reference_level Treatment group used as the propensity score
 #'   reference. If `NULL`, the last treatment level is used.
 #'
@@ -186,6 +186,7 @@ match_3way <- function(data, search, gps, X_vars = paste0("X", 1:10),
                         ps_space = c("raw", "logit"), top_n = 10L,
                         reference_level = NULL) {
   ps_space <- match.arg(ps_space)
+  top_n <- require_positive_int(top_n, "top_n")
   groups <- search$groups
   if (length(groups) != 2L) {
     stop("match_3way() requires exactly three treatment groups ",
