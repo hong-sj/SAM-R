@@ -187,6 +187,7 @@ match_3way <- function(data, search, gps, X_vars = paste0("X", 1:10),
                         reference_level = NULL) {
   ps_space <- match.arg(ps_space)
   top_n <- require_positive_int(top_n, "top_n")
+  check_fingerprint(search, data, treatment_var)
   labels <- treatment_labels(data, treatment_var)
   groups <- as.character(search$groups)
   if (length(groups) != 2L) {

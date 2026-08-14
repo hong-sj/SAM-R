@@ -82,6 +82,7 @@ sam_evaluate <- function(data, search, match_result, gps,
   groups <- as.character(search$groups)
   matched <- match_result$matched
 
+  check_fingerprint(search, data, treatment_var)
   labels <- treatment_labels(data, treatment_var)
   anchor_level <- unique(labels[search$anchor_rows])
   stopifnot(length(anchor_level) == 1)
@@ -192,6 +193,7 @@ extract_matched_data <- function(data, search, match_result,
   matched <- match_result$matched
   groups <- as.character(search$groups)
 
+  check_fingerprint(search, data, treatment_var)
   labels <- treatment_labels(data, treatment_var)
   anchor_level <- treatment_level(anchor_level)
 

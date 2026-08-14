@@ -71,6 +71,7 @@
 sam_match <- function(data, search, X_vars = paste0("X", 1:10),
                       treatment_var = "T") {
   
+  check_fingerprint(search, data, treatment_var)
   labels <- treatment_labels(data, treatment_var)
   anchor_rows <- as.integer(search$anchor_rows)
   groups <- as.character(search$groups)

@@ -28,6 +28,11 @@
 #'     \item{groups}{Comparator treatment groups.}
 #'     \item{candidates}{Candidate row indices for each anchor and
 #'       comparator group.}
+#'     \item{fingerprint}{Identifies the exact frame, in the exact row order,
+#'       that the search ran on. Every later stage verifies it, because
+#'       matched sets are stored as positional row indices: re-sorting or
+#'       filtering `data` in between would silently repoint them at other
+#'       subjects. Adding a column, such as an outcome, is still allowed.}
 #'   }
 #'
 #' @examples
@@ -112,5 +117,12 @@ gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = 
     stats::setNames(lapply(groups, function(g) candidates_by_group[[g]][[i]]), groups)
   })
 
-  list(anchor_rows = anchor_rows, groups = groups, candidates = candidates)
+  list(
+    anchor_rows = anchor_rows,
+    groups = groups,
+    candidates = candidates,
+    # Matched sets are stored as positional row indices, so every later stage
+    # needs this exact frame in this exact row order.
+    fingerprint = data_fingerprint(data, treatment_var)
+  )
 }

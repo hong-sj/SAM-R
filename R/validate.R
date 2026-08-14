@@ -227,6 +227,11 @@ require_positive_int <- function(value, name) {
 #' reorder *within* one treatment group. No other column is recorded, so
 #' attaching an outcome column between stages stays legal.
 #'
+#' The trade-off that buys is a blind spot: overwriting the *contents* of
+#' existing rows (`data[rows, ] <- ...`) changes neither the row names nor the
+#' labels and is therefore not detected. Row *reordering*, which is the failure
+#' this guards against, always moves one of the two.
+#'
 #' Row names are stored only when they are not R's automatic `1:n` sequence
 #' (`.row_names_info()` reports a negative count for the compact internal
 #' form), which keeps the fingerprint small for the common case.
