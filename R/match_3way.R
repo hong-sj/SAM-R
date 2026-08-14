@@ -51,66 +51,156 @@ calc_caliper_3way <- function(ps_used, treatment_var_values) {
   0.6 * sqrt(sum(rowMeans(var_by_group)) / 3)
 }
 
-# Build a 2D KD-tree
-kdtree_build <- function(coords, idx = seq_len(nrow(coords)), depth = 0L) {
-  n <- length(idx)
-  if (n == 1L) {
-    return(list(leaf = TRUE, point = idx[1]))
-  }
-  dim <- (depth %% 2L) + 1L
-  ord <- idx[order(coords[idx, dim])]
-  mid <- n %/% 2L
-  left_idx  <- ord[seq_len(mid)]
-  right_idx <- ord[(mid + 1L):n]
-  split_val <- coords[right_idx[1], dim]
-  list(
-    leaf = FALSE, split_dim = dim, split_val = split_val,
-    left  = kdtree_build(coords, left_idx,  depth + 1L),
-    right = kdtree_build(coords, right_idx, depth + 1L)
-  )
-}
+# --- 2-D k-d tree with removable points
+#
+# Points are removed from the search as they are matched. Flagging them
+# inactive and letting the walk find out at the leaves means that once most of
+# a group is consumed, every query descends and backtracks through large dead
+# subtrees to reach the few points still available -- the walk grows with the
+# number of removals rather than with log(n).
+#
+# Each node therefore carries a count of the active points beneath it, which a
+# removal decrements along the path from the leaf to the root. A subtree whose
+# count has reached zero is skipped outright.
+#
+# The tree is held in an environment of flat vectors, so a removal updates the
+# counts in place; a nested list would copy the path on every write. Traversal
+# order is unchanged, which matters because callers rely on the order
+# kdtree_range() returns points in, and on nearest ties resolving in favour of
+# the primary branch.
 
-# Find the nearest active point in a KD-tree
-kdtree_nearest <- function(node, coords, query, active) {
-  if (node$leaf) {
-    if (!active[node$point]) return(NULL)
-    return(node$point)
-  }
-  gap <- query[node$split_dim] - node$split_val
-  if (gap <= 0) { primary <- node$left; other <- node$right
-  } else        { primary <- node$right; other <- node$left }
+kdtree_build <- function(coords) {
+  n <- nrow(coords)
+  capacity <- max(1L, 2L * n)
 
-  best <- kdtree_nearest(primary, coords, query, active)
-  best_d2 <- if (!is.null(best)) sum((coords[best, ] - query)^2) else Inf
+  tree <- new.env(parent = emptyenv())
+  tree$leaf <- logical(capacity)
+  tree$point <- integer(capacity)
+  tree$split_dim <- integer(capacity)
+  tree$split_val <- numeric(capacity)
+  tree$left <- integer(capacity)
+  tree$right <- integer(capacity)
+  tree$parent <- integer(capacity)
+  tree$active <- integer(capacity)
+  tree$point_leaf <- integer(n)
 
-  # Check the opposite branch when it could contain a closer point
-  if (gap * gap < best_d2) {
-    cand <- kdtree_nearest(other, coords, query, active)
-    if (!is.null(cand)) {
-      cand_d2 <- sum((coords[cand, ] - query)^2)
-      if (cand_d2 < best_d2) { best <- cand; best_d2 <- cand_d2 }
+  next_id <- 0L
+
+  build <- function(idx, depth, parent) {
+    next_id <<- next_id + 1L
+    id <- next_id
+    tree$parent[id] <- parent
+    tree$active[id] <- length(idx)
+
+    if (length(idx) == 1L) {
+      tree$leaf[id] <- TRUE
+      tree$point[id] <- idx[1L]
+      tree$point_leaf[idx[1L]] <- id
+      return(id)
     }
+
+    dim <- (depth %% 2L) + 1L
+    ord <- idx[order(coords[idx, dim])]
+    mid <- length(idx) %/% 2L
+    left_idx <- ord[seq_len(mid)]
+    right_idx <- ord[(mid + 1L):length(idx)]
+
+    tree$leaf[id] <- FALSE
+    tree$split_dim[id] <- dim
+    tree$split_val[id] <- coords[right_idx[1L], dim]
+    tree$left[id] <- build(left_idx, depth + 1L, id)
+    tree$right[id] <- build(right_idx, depth + 1L, id)
+    id
   }
-  best
+
+  tree$root <- build(seq_len(n), 0L, 0L)
+  tree
 }
 
-# Find active points within a given squared radius
-kdtree_range <- function(node, coords, query, radius2, active) {
-  if (node$leaf) {
-    if (!active[node$point]) return(integer(0))
-    d2 <- sum((coords[node$point, ] - query)^2)
+# Is a point still available?
+kdtree_active <- function(tree, point) {
+  tree$active[tree$point_leaf[point]] > 0L
+}
 
-    if (d2 < radius2) return(node$point) else return(integer(0))
-  }
-  gap <- query[node$split_dim] - node$split_val
-  if (gap <= 0) { primary <- node$left; other <- node$right
-  } else        { primary <- node$right; other <- node$left }
+# Remove a point, decrementing every ancestor's count. The path is collected
+# first and updated in one assignment: taking a second reference to
+# `tree$active` and writing through it would copy the whole vector.
+kdtree_remove <- function(tree, point) {
+  parent <- tree$parent
+  id <- tree$point_leaf[point]
 
-  result <- kdtree_range(primary, coords, query, radius2, active)
-  if (gap * gap < radius2) {
-    result <- c(result, kdtree_range(other, coords, query, radius2, active))
+  path <- integer(64L)
+  depth <- 0L
+  while (id != 0L) {
+    depth <- depth + 1L
+    path[depth] <- id
+    id <- parent[id]
   }
-  result
+
+  path <- path[seq_len(depth)]
+  tree$active[path] <- tree$active[path] - 1L
+  invisible(NULL)
+}
+
+# Nearest active point to `query`, or NULL when the tree is empty.
+kdtree_nearest <- function(tree, coords, query) {
+  leaf <- tree$leaf; point <- tree$point
+  left <- tree$left; right <- tree$right
+  split_dim <- tree$split_dim; split_val <- tree$split_val
+
+  descend <- function(id) {
+    if (tree$active[id] == 0L) return(NULL)
+    if (leaf[id]) return(point[id])
+
+    gap <- query[split_dim[id]] - split_val[id]
+    if (gap <= 0) { primary <- left[id]; other <- right[id]
+    } else        { primary <- right[id]; other <- left[id] }
+
+    best <- descend(primary)
+    best_d2 <- if (!is.null(best)) sum((coords[best, ] - query)^2) else Inf
+
+    # Check the opposite branch when it could contain a closer point
+    if (gap * gap < best_d2) {
+      cand <- descend(other)
+      if (!is.null(cand)) {
+        cand_d2 <- sum((coords[cand, ] - query)^2)
+        if (cand_d2 < best_d2) { best <- cand; best_d2 <- cand_d2 }
+      }
+    }
+    best
+  }
+
+  descend(tree$root)
+}
+
+# Active points strictly within a squared radius, in traversal order.
+kdtree_range <- function(tree, coords, query, radius2) {
+  leaf <- tree$leaf; point <- tree$point
+  left <- tree$left; right <- tree$right
+  split_dim <- tree$split_dim; split_val <- tree$split_val
+
+  descend <- function(id) {
+    if (tree$active[id] == 0L) return(integer(0))
+
+    if (leaf[id]) {
+      p <- point[id]
+      d2 <- sum((coords[p, ] - query)^2)
+      # Boundary points are excluded by design.
+      if (d2 < radius2) return(p) else return(integer(0))
+    }
+
+    gap <- query[split_dim[id]] - split_val[id]
+    if (gap <= 0) { primary <- left[id]; other <- right[id]
+    } else        { primary <- right[id]; other <- left[id] }
+
+    result <- descend(primary)
+    if (gap * gap < radius2) {
+      result <- c(result, descend(other))
+    }
+    result
+  }
+
+  descend(tree$root)
 }
 
 #' Three-way propensity score matching
@@ -294,8 +384,6 @@ match_3way <- function(data, search, gps, X_vars = NULL,
   # Use the smallest treatment group as the matching base
   tree_o1 <- kdtree_build(coords_o1)
   tree_o2 <- kdtree_build(coords_o2)
-  active_o1 <- rep(TRUE, nrow(coords_o1))
-  active_o2 <- rep(TRUE, nrow(coords_o2))
 
   matched_flag <- rep(FALSE, n_red)
   exhausted    <- rep(FALSE, n_red)
@@ -319,23 +407,33 @@ match_3way <- function(data, search, gps, X_vars = NULL,
   heap_size <- 0L
   heap_pushed <- 0L
 
-  heap_swap <- function(a, b) {
-    tmp_perim <- heap_perim[a]; tmp_seq <- heap_seq[a]
-    tmp_red <- heap_red[a]; tmp_o1 <- heap_o1[a]; tmp_o2 <- heap_o2[a]
+  # TRUE when the entry at `a` should come out before the key it is compared
+  # against. The insertion order is the tie-break, reproducing which.min's
+  # preference for the earliest entry among equal perimeters.
+  heap_before_key <- function(a, perimeter, seq_no) {
+    heap_perim[a] < perimeter ||
+      (heap_perim[a] == perimeter && heap_seq[a] < seq_no)
+  }
 
-    heap_perim[a] <<- heap_perim[b]; heap_seq[a] <<- heap_seq[b]
-    heap_red[a] <<- heap_red[b]; heap_o1[a] <<- heap_o1[b]
-    heap_o2[a] <<- heap_o2[b]
-
-    heap_perim[b] <<- tmp_perim; heap_seq[b] <<- tmp_seq
-    heap_red[b] <<- tmp_red; heap_o1[b] <<- tmp_o1; heap_o2[b] <<- tmp_o2
+  # Entries move by carrying a hole up or down and writing the travelling
+  # record once at the end. Swapping two full records at every level costs ten
+  # reads and ten writes; this costs five writes.
+  heap_move <- function(to, from) {
+    heap_perim[to] <<- heap_perim[from]
+    heap_seq[to] <<- heap_seq[from]
+    heap_red[to] <<- heap_red[from]
+    heap_o1[to] <<- heap_o1[from]
+    heap_o2[to] <<- heap_o2[from]
     invisible(NULL)
   }
 
-  # TRUE when entry `a` should come out before entry `b`.
-  heap_before <- function(a, b) {
-    heap_perim[a] < heap_perim[b] ||
-      (heap_perim[a] == heap_perim[b] && heap_seq[a] < heap_seq[b])
+  heap_place <- function(at, perimeter, seq_no, red, o1_index, o2_index) {
+    heap_perim[at] <<- perimeter
+    heap_seq[at] <<- seq_no
+    heap_red[at] <<- red
+    heap_o1[at] <<- o1_index
+    heap_o2[at] <<- o2_index
+    invisible(NULL)
   }
 
   heap_push <- function(perimeter, red, o1_index, o2_index) {
@@ -349,20 +447,17 @@ match_3way <- function(data, search, gps, X_vars = NULL,
 
     heap_size <<- heap_size + 1L
     heap_pushed <<- heap_pushed + 1L
-    child <- heap_size
+    seq_no <- heap_pushed
 
-    heap_perim[child] <<- perimeter
-    heap_seq[child] <<- heap_pushed
-    heap_red[child] <<- red
-    heap_o1[child] <<- o1_index
-    heap_o2[child] <<- o2_index
-
-    while (child > 1L) {
-      parent <- child %/% 2L
-      if (heap_before(parent, child)) break
-      heap_swap(parent, child)
-      child <- parent
+    hole <- heap_size
+    while (hole > 1L) {
+      parent <- hole %/% 2L
+      if (heap_before_key(parent, perimeter, seq_no)) break
+      heap_move(hole, parent)
+      hole <- parent
     }
+
+    heap_place(hole, perimeter, seq_no, red, o1_index, o2_index)
     invisible(NULL)
   }
 
@@ -370,21 +465,38 @@ match_3way <- function(data, search, gps, X_vars = NULL,
   heap_pop <- function() {
     top <- c(heap_perim[1L], heap_red[1L], heap_o1[1L], heap_o2[1L])
 
-    heap_swap(1L, heap_size)
+    # The last entry is re-inserted from the root downwards.
+    last <- heap_size
+    moving_perim <- heap_perim[last]
+    moving_seq <- heap_seq[last]
+    moving_red <- heap_red[last]
+    moving_o1 <- heap_o1[last]
+    moving_o2 <- heap_o2[last]
     heap_size <<- heap_size - 1L
 
-    parent <- 1L
+    hole <- 1L
     repeat {
-      left <- parent * 2L
+      left <- hole * 2L
       if (left > heap_size) break
 
       best <- left
       right <- left + 1L
-      if (right <= heap_size && heap_before(right, left)) best <- right
-      if (heap_before(parent, best)) break
+      if (right <= heap_size &&
+          (heap_perim[right] < heap_perim[left] ||
+             (heap_perim[right] == heap_perim[left] &&
+                heap_seq[right] < heap_seq[left]))) {
+        best <- right
+      }
 
-      heap_swap(parent, best)
-      parent <- best
+      if (!heap_before_key(best, moving_perim, moving_seq)) break
+
+      heap_move(hole, best)
+      hole <- best
+    }
+
+    if (heap_size > 0L) {
+      heap_place(hole, moving_perim, moving_seq, moving_red, moving_o1,
+                 moving_o2)
     }
     top
   }
@@ -393,9 +505,9 @@ match_3way <- function(data, search, gps, X_vars = NULL,
   # Build KD-trees for the two remaining treatment groups
   push_candidates <- function(i) {
     pr <- coords_red[i, ]
-    nb <- kdtree_nearest(tree_o1, coords_o1, pr, active_o1)
+    nb <- kdtree_nearest(tree_o1, coords_o1, pr)
     if (is.null(nb)) { exhausted[i] <<- TRUE; counters[i] <<- 0L; return(invisible(NULL)) }
-    nbg <- kdtree_nearest(tree_o2, coords_o2, coords_o1[nb, ], active_o2)
+    nbg <- kdtree_nearest(tree_o2, coords_o2, coords_o1[nb, ])
     if (is.null(nbg)) { exhausted[i] <<- TRUE; counters[i] <<- 0L; return(invisible(NULL)) }
 
     # Initial candidate triangle
@@ -413,8 +525,8 @@ match_3way <- function(data, search, gps, X_vars = NULL,
 
     # Search for additional candidates near the base subject
     radius2 <- (small / 2)^2
-    nbs <- kdtree_range(tree_o1, coords_o1, pr, radius2, active_o1)
-    ngs <- kdtree_range(tree_o2, coords_o2, pr, radius2, active_o2)
+    nbs <- kdtree_range(tree_o1, coords_o1, pr, radius2)
+    ngs <- kdtree_range(tree_o2, coords_o2, pr, radius2)
 
     if (length(nbs) > 0 && length(ngs) > 0) {
       A <- coords_o1[nbs, , drop = FALSE]; B <- coords_o2[ngs, , drop = FALSE]
@@ -477,11 +589,11 @@ match_3way <- function(data, search, gps, X_vars = NULL,
     # Skip candidates belonging to an already matched base subject
     if (matched_flag[i]) next
 
-    if (active_o1[b] && active_o2[g]) {
+    if (kdtree_active(tree_o1, b) && kdtree_active(tree_o2, g)) {
       # Accept the candidate trio
       matched_flag[i] <- TRUE
-      active_o1[b] <- FALSE
-      active_o2[g] <- FALSE
+      kdtree_remove(tree_o1, b)
+      kdtree_remove(tree_o2, g)
 
       row_red_global <- rows_by_level[[red_level]][i]
       row_o1_global  <- rows_by_level[[o1]][b]

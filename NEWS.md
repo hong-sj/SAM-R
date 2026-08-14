@@ -85,6 +85,11 @@ sign change listed under "Breaking changes".
 * `sam_match()` maintains a reverse index of which anchors claim which
   comparator subject, instead of rescanning every remaining anchor after each
   match. At n = 20,000 this is 2.84 s to 1.63 s (#7).
+* `match_3way()` prunes exhausted branches of its k-d tree. Points were removed
+  by clearing a flag, so once most of a group was consumed every query
+  descended and backtracked through large dead subtrees; each node now carries
+  a count of the active points beneath it. Together with the heap below, this
+  takes n = 48,000 from 39.0 s to 23.5 s.
 * `match_3way()` keeps its candidate trios in a binary min-heap. Selecting the
   cheapest trio previously scanned the whole pool with `which.min`, and the
   pool never shrank because popped entries were tombstoned, so both the scan
