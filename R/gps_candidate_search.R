@@ -138,8 +138,18 @@ gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = 
         distance[ranked[k_query]] <= distance[ranked[m]] * (1 + .SAM_TIE_TOL)
 
       if (contested) {
-        all_d2 <- anchor_sq[i] + group_sq -
-          2 * as.numeric(X_group %*% X_anchor[i, ])
+        # Accumulated column by column rather than through `%*%`. A BLAS
+        # matrix-vector product may reduce different rows in different orders,
+        # depending on blocking and vector width, so two points at identical
+        # coordinates can come out differing in the last bit -- which is
+        # precisely what this branch exists to rule out. Summing explicitly
+        # gives every row the same accumulation order.
+        cross <- numeric(n_group)
+        for (k in seq_len(ncol(X_group))) {
+          cross <- cross + X_group[, k] * X_anchor[i, k]
+        }
+
+        all_d2 <- anchor_sq[i] + group_sq - 2 * cross
         all_d2[all_d2 < 0] <- 0
         group_rows[order(sqrt(all_d2), seq_len(n_group))[seq_len(m)]]
       } else {

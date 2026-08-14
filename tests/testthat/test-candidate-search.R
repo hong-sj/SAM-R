@@ -7,6 +7,16 @@
 #' Builds the whole anchor-by-comparator distance matrix and fully sorts every
 #' row. `order()` is a stable sort, so equidistant candidates come out in row
 #' order -- which is the behaviour the tree query has to reproduce.
+#'
+#' The cross term is accumulated column by column rather than as
+#' `X_anchor %*% t(X_group)`. That is the one departure from the original, and
+#' it is deliberate: a BLAS product may reduce different rows in different
+#' orders, so on data with exact ties the original's tie-break was itself
+#' BLAS-dependent. Fixing the reduction order here states the rule the
+#' implementation is required to follow -- equidistant candidates in row order
+#' -- rather than whichever answer a particular BLAS happened to give. On data
+#' without exact ties the two agree to the last bit that matters, since no
+#' ordering depends on it.
 reference_candidates <- function(data, gps, treatment_var, anchor_level,
                                  top_m, gps_space) {
   labels <- treatment_labels(data, treatment_var)
@@ -29,7 +39,12 @@ reference_candidates <- function(data, gps, treatment_var, anchor_level,
 
     x_sq <- rowSums(X_anchor^2)
     y_sq <- rowSums(X_group^2)
-    cross <- X_anchor %*% t(X_group)
+
+    cross <- matrix(0, nrow(X_anchor), nrow(X_group))
+    for (k in seq_len(ncol(X_anchor))) {
+      cross <- cross + outer(X_anchor[, k], X_group[, k])
+    }
+
     d2 <- outer(x_sq, y_sq, "+") - 2 * cross
     d2[d2 < 0] <- 0
     dist_mat <- sqrt(d2)
