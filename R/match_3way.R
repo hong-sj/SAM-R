@@ -357,13 +357,24 @@ match_3way <- function(data, search, gps, X_vars = NULL,
   matched_dist <- matrix(NA_real_, n_red, length(groups),
                          dimnames = list(NULL, groups))
 
-  while (length(pool_perim) > 0) {
+  repeat {
+    if (length(pool_perim) == 0L) {
+      break
+    }
+
     pop <- which.min(pool_perim)
+    if (!is.finite(pool_perim[pop])) {
+      break
+    }
+
     i <- pool_red[pop]; b <- pool_o1[pop]; g <- pool_o2[pop]
     perim_popped <- pool_perim[pop]
 
-    pool_red   <- pool_red[-pop];   pool_o1   <- pool_o1[-pop];   pool_o2 <- pool_o2[-pop]
-    pool_perim <- pool_perim[-pop]; pool_d_o1 <- pool_d_o1[-pop]; pool_d_o2 <- pool_d_o2[-pop]
+    # Tombstone rather than delete. Removing the popped element from all six
+    # parallel vectors copied every one of them on every pop, which is
+    # quadratic in the pool size; an infinite perimeter is never selected
+    # again by which.min.
+    pool_perim[pop] <- Inf
 
     # Skip candidates belonging to an already matched base subject
     if (matched_flag[i]) next

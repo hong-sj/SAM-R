@@ -131,12 +131,12 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
     distance_sorted[[g]] <- vector("list", n_A)
     
     for (i in seq_len(n_A)) {
-      idx <- as.integer(
-        stats::na.omit(
-          match(candidates[[i]][[g]], group_rows[[g]])
-        )
-      )
-      
+      # `match()` returns NA for a candidate that is not in this group; drop
+      # those directly rather than through na.omit(), which builds an
+      # attribute recording every removed position and dominated this loop.
+      idx <- match(candidates[[i]][[g]], group_rows[[g]])
+      idx <- as.integer(idx[!is.na(idx)])
+
       if (length(idx) == 0L) {
         candidate_sorted[[g]][[i]] <- integer(0)
         distance_sorted[[g]][[i]] <- numeric(0)
@@ -170,10 +170,14 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
     groups
   )
   
-  remaining_anchor <- seq_len(n_A)
+  # `alive` replaces a shrinking `remaining_anchor` vector, which was
+  # reallocated on every match. A dead anchor carries best_loss = Inf, so the
+  # global which.min below never selects one.
+  alive <- rep(TRUE, n_A)
   needs_update <- rep(TRUE, n_A)
   best_loss <- rep(Inf, n_A)
-  
+
+
   best_choice <- matrix(
     NA_integer_,
     nrow = n_A,
@@ -187,34 +191,93 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
     ncol = length(groups),
     dimnames = list(NULL, groups)
   )
-  
+
+  # --- Reverse index
+  # Which anchors are currently claiming which comparator subject, as one
+  # doubly-linked list per comparator subject. Consuming a subject then visits
+  # only its own claimants, instead of rescanning every remaining anchor after
+  # every match. The lists must be doubly linked: an anchor moves between
+  # buckets as its pick is consumed, and a singly-linked list cannot unlink a
+  # node from the middle -- an anchor that re-picks the same subject would link
+  # to itself and the walk would never terminate.
+  claim <- matrix(0L, nrow = n_A, ncol = length(groups))
+  link_next <- matrix(0L, nrow = n_A, ncol = length(groups))
+  link_prev <- matrix(0L, nrow = n_A, ncol = length(groups))
+  bucket_head <- lapply(groups, function(g) integer(length(group_rows[[g]])))
+
+  unlink_claim <- function(i, gi) {
+    held <- claim[i, gi]
+    if (held == 0L) {
+      return(invisible(NULL))
+    }
+
+    previous <- link_prev[i, gi]
+    following <- link_next[i, gi]
+
+    if (previous == 0L) {
+      bucket_head[[gi]][held] <<- following
+    } else {
+      link_next[previous, gi] <<- following
+    }
+    if (following != 0L) {
+      link_prev[following, gi] <<- previous
+    }
+
+    claim[i, gi] <<- 0L
+    link_next[i, gi] <<- 0L
+    link_prev[i, gi] <<- 0L
+    invisible(NULL)
+  }
+
+  set_claim <- function(i, gi, choice) {
+    if (claim[i, gi] == choice) {
+      return(invisible(NULL))
+    }
+    unlink_claim(i, gi)
+
+    head <- bucket_head[[gi]][choice]
+    link_next[i, gi] <<- head
+    link_prev[i, gi] <<- 0L
+    if (head != 0L) {
+      link_prev[head, gi] <<- i
+    }
+    bucket_head[[gi]][choice] <<- i
+    claim[i, gi] <<- choice
+    invisible(NULL)
+  }
+
   # Best available matched set for one anchor
   recompute <- function(i) {
     total <- 0
-    
-    for (g in groups) {
+
+    for (gi in seq_along(groups)) {
+      g <- groups[gi]
       idx <- candidate_sorted[[g]][[i]]
       d <- distance_sorted[[g]][[i]]
       p <- pointer[[g]][i]
-      
+
       while (p <= length(idx) && !active[[g]][idx[p]]) {
         p <- p + 1L
       }
-      
+
       pointer[[g]][i] <<- p
-      
+
       if (p > length(idx)) {
         best_loss[i] <<- Inf
         best_choice[i, ] <<- NA_integer_
         best_dist[i, ] <<- NA_real_
+        for (gj in seq_along(groups)) {
+          unlink_claim(i, gj)
+        }
         return(invisible(NULL))
       }
-      
-      best_choice[i, g] <<- idx[p]
-      best_dist[i, g] <<- d[p]
+
+      best_choice[i, gi] <<- idx[p]
+      best_dist[i, gi] <<- d[p]
+      set_claim(i, gi, idx[p])
       total <- total + d[p]
     }
-    
+
     best_loss[i] <<- total
     invisible(NULL)
   }
@@ -231,73 +294,71 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
   matched_dist <- matrix(NA_real_, n_A, length(groups),
                          dimnames = list(NULL, groups))
 
-  while (length(remaining_anchor) > 0L) {
-    stale <- remaining_anchor[needs_update[remaining_anchor]]
-    
+  stale <- which(alive)
+
+  repeat {
     if (length(stale) > 0L) {
       for (i in stale) {
         recompute(i)
       }
       needs_update[stale] <- FALSE
     }
-    
-    # Remove anchors with no available candidate in at least one group
-    exhausted_now <- remaining_anchor[
-      !is.finite(best_loss[remaining_anchor])
-    ]
-    
-    if (length(exhausted_now) > 0L) {
-      remaining_anchor <- remaining_anchor[
-        !remaining_anchor %in% exhausted_now
-      ]
-      
-      if (length(remaining_anchor) == 0L) {
-        break
-      }
+
+    # Select the globally smallest-loss matched set. Retired anchors, and
+    # anchors with no available candidate in some group, both carry Inf, so a
+    # non-finite minimum means nothing matchable is left. Scanning the full
+    # vector beats maintaining a pure-R heap: which.min is one C-level pass
+    # with no allocation, whereas a heap would pay R-level call overhead per
+    # sift.
+    i_star <- which.min(best_loss)
+    if (!is.finite(best_loss[i_star])) {
+      break
     }
-    
-    # Select the globally smallest-loss matched set
-    i_star <- remaining_anchor[
-      which.min(best_loss[remaining_anchor])
-    ]
-    
+
     choice_star <- best_choice[i_star, , drop = TRUE]
-    
+
     n_matched <- n_matched + 1L
     matched_anchor[n_matched] <- anchor_rows[i_star]
     matched_loss[n_matched] <- best_loss[i_star]
     matched_dist[n_matched, ] <- best_dist[i_star, ]
 
-    for (g in groups) {
-      matched_choice[n_matched, g] <- group_rows[[g]][choice_star[[g]]]
+    for (gi in seq_along(groups)) {
+      matched_choice[n_matched, gi] <-
+        group_rows[[gi]][choice_star[[gi]]]
     }
 
-    # Remove the selected anchor and comparator subjects
-    remaining_anchor <- remaining_anchor[
-      remaining_anchor != i_star
-    ]
-    
-    for (g in groups) {
-      active[[g]][choice_star[[g]]] <- FALSE
+    # Retire the selected anchor.
+    alive[i_star] <- FALSE
+    best_loss[i_star] <- Inf
+    for (gi in seq_along(groups)) {
+      unlink_claim(i_star, gi)
     }
-    
-    if (length(remaining_anchor) == 0L) {
-      break
+
+    # Consume the selected comparator subjects and visit only the anchors that
+    # were claiming them.
+    affected <- integer(0)
+
+    for (gi in seq_along(groups)) {
+      chosen <- choice_star[[gi]]
+      active[[gi]][chosen] <- FALSE
+
+      claimant <- bucket_head[[gi]][chosen]
+      while (claimant != 0L) {
+        following <- link_next[claimant, gi]
+        unlink_claim(claimant, gi)
+        affected <- c(affected, claimant)
+        claimant <- following
+      }
     }
-    
-    # Recompute only anchors affected by the newly used comparator subjects
-    affected_mask <- rep(FALSE, length(remaining_anchor))
-    
-    for (g in groups) {
-      affected_mask <- affected_mask |
-        best_choice[remaining_anchor, g] %in% choice_star[[g]]
+
+    if (length(affected) > 0L) {
+      affected <- unique(affected)
+      affected <- affected[alive[affected]]
+      needs_update[affected] <- TRUE
     }
-    
-    needs_update[
-      remaining_anchor[affected_mask]
-    ] <- TRUE
+    stale <- affected
   }
-  
+
   # Output
   keep <- seq_len(n_matched)
   named_groups <- stats::setNames(groups, groups)
