@@ -495,3 +495,31 @@ check_fingerprint <- function(search, data, treatment_var) {
 
   invisible(TRUE)
 }
+
+
+#' The stack a golden fixture was generated on
+#'
+#' Package versions alone do not identify it. The same versions on a different
+#' platform or BLAS move an iterative solver's last digits, which is exactly
+#' what the strict golden tier compares, so the platform and the linear algebra
+#' libraries are recorded too.
+#'
+#' Shared by `tests/testthat/golden/make-golden.R` and `test-golden.R` so the
+#' record and the check cannot drift apart.
+#'
+#' @return A one-row `data.frame`.
+#'
+#' @keywords internal
+#' @noRd
+golden_environment <- function() {
+  data.frame(
+    r_version = paste(R.version$major, R.version$minor, sep = "."),
+    platform = R.version$platform,
+    blas = basename(extSoftVersion()[["BLAS"]]),
+    lapack = basename(La_library()),
+    nnet = as.character(utils::packageVersion("nnet")),
+    MASS = as.character(utils::packageVersion("MASS")),
+    RANN = as.character(utils::packageVersion("RANN")),
+    stringsAsFactors = FALSE
+  )
+}

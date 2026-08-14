@@ -101,41 +101,49 @@ gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = 
                                available = labels)
     X_group <- gps_used[group_rows, , drop = FALSE]
     n_group <- length(group_rows)
+    n_anchor <- nrow(X_anchor)
     m <- min(top_m, n_group)
 
     # One neighbour beyond the cutoff, so a tie straddling it is detectable.
     k_query <- min(m + 1L, n_group)
     neighbours <- RANN::nn2(data = X_group, query = X_anchor, k = k_query)
 
-    neighbour_idx <- neighbours$nn.idx[, seq_len(m), drop = FALSE]
-    neighbour_dist <- neighbours$nn.dists[, seq_len(m), drop = FALSE]
-
-    # The tree resolves equidistant candidates arbitrarily, and when more of
-    # them are tied at the cutoff than there are slots left it returns an
-    # arbitrary subset. A stable sort by row order does neither, so those
-    # anchors are re-resolved against every candidate below.
-    contested <- if (k_query > m) {
-      neighbours$nn.dists[, k_query] <=
-        neighbour_dist[, m] * (1 + .SAM_TIE_TOL)
-    } else {
-      rep(FALSE, nrow(X_anchor))
-    }
-
+    # The tree's own distances are not used for ordering. ANN accumulates a
+    # distance along the path it took to reach a point, so two points at
+    # identical coordinates can come back differing in the last bit, and
+    # sorting on that would follow the traversal rather than the row order the
+    # full-matrix implementation used. Distances are recomputed here with that
+    # implementation's formula, for every returned pair in one pass.
+    anchor_sq <- rowSums(X_anchor^2)
     group_sq <- rowSums(X_group^2)
 
-    lapply(seq_len(nrow(X_anchor)), function(i) {
-      if (contested[i]) {
-        # Recomputed exactly as the full-matrix implementation did, so that
-        # the tie-break is identical to the last bit.
-        d2 <- sum(X_anchor[i, ]^2) + group_sq -
+    flat_anchor <- rep(seq_len(n_anchor), times = k_query)
+    flat_candidate <- as.integer(neighbours$nn.idx)
+
+    d2 <- anchor_sq[flat_anchor] + group_sq[flat_candidate] -
+      2 * rowSums(X_anchor[flat_anchor, , drop = FALSE] *
+                    X_group[flat_candidate, , drop = FALSE])
+    d2[d2 < 0] <- 0
+    exact <- matrix(sqrt(d2), nrow = n_anchor, ncol = k_query)
+
+    lapply(seq_len(n_anchor), function(i) {
+      idx <- neighbours$nn.idx[i, ]
+      distance <- exact[i, ]
+      ranked <- order(distance, idx)
+
+      # More candidates may be tied at the cutoff than there are slots left, in
+      # which case the tree returned an arbitrary subset of them. Those anchors
+      # are re-resolved against every candidate in the group.
+      contested <- k_query > m &&
+        distance[ranked[k_query]] <= distance[ranked[m]] * (1 + .SAM_TIE_TOL)
+
+      if (contested) {
+        all_d2 <- anchor_sq[i] + group_sq -
           2 * as.numeric(X_group %*% X_anchor[i, ])
-        d2[d2 < 0] <- 0
-        group_rows[order(sqrt(d2), seq_len(n_group))[seq_len(m)]]
+        all_d2[all_d2 < 0] <- 0
+        group_rows[order(sqrt(all_d2), seq_len(n_group))[seq_len(m)]]
       } else {
-        # Ties within the returned set still follow row order, matching the
-        # stable sort this replaces.
-        j <- neighbour_idx[i, ]
-        group_rows[j[order(neighbour_dist[i, ], j)]]
+        group_rows[idx[ranked[seq_len(m)]]]
       }
     })
   })

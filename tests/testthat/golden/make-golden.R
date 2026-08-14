@@ -13,6 +13,9 @@
 
 suppressMessages(pkgload::load_all(".", quiet = TRUE))
 
+# golden_environment() is defined in R/validate.R so that the generator and
+# the comparison in test-golden.R cannot drift apart.
+
 golden_dir <- "tests/testthat/golden"
 dir.create(golden_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -98,15 +101,11 @@ for (dataset in c("four", "three")) {
 }
 
 # The stack that produced the fixtures, so test-golden.R can tell whether it is
-# comparing against the environment they were generated on.
-environment_record <- data.frame(
-  r_version = paste(R.version$major, R.version$minor, sep = "."),
-  nnet = as.character(utils::packageVersion("nnet")),
-  MASS = as.character(utils::packageVersion("MASS")),
-  RANN = as.character(utils::packageVersion("RANN")),
-  stringsAsFactors = FALSE
-)
-write.dcf(environment_record, file.path(golden_dir, "ENVIRONMENT.dcf"))
+# comparing against the environment they were generated on. The platform and
+# the linear algebra libraries are part of that: the same package versions on a
+# different BLAS move an IRLS standard error in its tenth digit, which is well
+# inside what the strict tier compares.
+write.dcf(golden_environment(), file.path(golden_dir, "ENVIRONMENT.dcf"))
 
 cat("Wrote", length(list.files(golden_dir, pattern = "[.]rds$")),
     "fixtures and ENVIRONMENT.dcf\n")

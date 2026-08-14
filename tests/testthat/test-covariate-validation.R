@@ -2,15 +2,19 @@
 ### Covariate validation before the linear algebra (#2)
 ################################################################################
 
-test_that("solve() still returns an all-NA matrix without raising", {
-  # This is the reason the check exists at all. If a future R release starts
-  # raising here instead, the safeguard in get_pooled_covariance() can be
-  # simplified -- but until then the tryCatch() alone is dead code.
+test_that("solve() does not raise on a non-finite matrix", {
+  # This is the reason the check exists at all: the tryCatch() around solve()
+  # never fires for missing data, so an is.finite() test on the result is what
+  # actually catches it.
+  #
+  # Exactly what comes back is a LAPACK detail and differs between platforms --
+  # all NA on some, a mix of NA and NaN on others -- so only the two properties
+  # get_pooled_covariance() relies on are asserted.
   S <- matrix(c(1, 0.5, 0.5, 1), 2)
   S[1, 1] <- NA_real_
 
   expect_silent(inverse <- solve(S))
-  expect_true(all(is.na(inverse)))
+  expect_false(all(is.finite(inverse)))
 })
 
 test_that("a single missing covariate cell raises instead of emptying the match", {
@@ -110,17 +114,30 @@ test_that("non-positive residual degrees of freedom raise", {
   )
 })
 
-test_that("the ginv fallback still covers genuine finite rank deficiency", {
+test_that("a rank-deficient covariance still yields a finite inverse", {
   fixture <- sam_fixture()
   collinear <- fixture$data
   collinear$duplicate <- collinear[[fixture$X_vars[1]]]
 
-  expect_warning(
-    pooled <- get_pooled_covariance(collinear,
-                                    c(fixture$X_vars, "duplicate"), "treatment"),
-    "numerically singular"
+  # Whether solve() raises on an exactly singular matrix, returns a non-finite
+  # result, or returns finite values from a barely-invertible one is a LAPACK
+  # detail that differs between platforms. What get_pooled_covariance()
+  # guarantees on all of them is a finite inverse; when it reaches
+  # MASS::ginv() to get one, it says so.
+  warned <- NULL
+  pooled <- withCallingHandlers(
+    get_pooled_covariance(collinear, c(fixture$X_vars, "duplicate"),
+                          "treatment"),
+    warning = function(w) {
+      warned <<- conditionMessage(w)
+      invokeRestart("muffleWarning")
+    }
   )
+
   expect_true(all(is.finite(pooled$S_inv)))
+  if (!is.null(warned)) {
+    expect_match(warned, "numerically singular")
+  }
 })
 
 test_that("estimate_gps_multinom validates its covariates as well", {

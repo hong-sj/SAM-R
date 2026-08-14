@@ -129,4 +129,6 @@ n = 50,000 to 200,000, where it previously grew with the sample.
   search and the matching engine, hand-computed values, and golden fixtures
   with a tiered comparison (#12).
 * `R CMD check` now runs in CI across R devel, release and oldrel-1 on Ubuntu,
-  plus macOS and Windows (#12).
+  plus macOS and Windows (#12). The golden fixtures record the platform and
+  BLAS as well as the package versions, so their strict comparison runs only
+  where they were generated; every CI job takes the loose tier.

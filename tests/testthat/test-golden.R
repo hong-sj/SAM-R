@@ -13,6 +13,14 @@
 ##               relative tolerance, because a standardized mean difference
 ##               sits near zero and a purely relative tolerance is meaningless
 ##               there
+##
+## That recorded environment includes the platform and the BLAS, not just the
+## package versions: the same versions on a different BLAS move an IRLS
+## standard error in its tenth digit, which is well inside the strict tier. It
+## follows that the strict tier only ever runs on the machine the fixtures were
+## generated on -- in CI every job takes the loose tier, and the correctness
+## load there is carried by the brute-force reference tests, the hand-computed
+## values and the invariants, none of which need a fixture.
 ##   decisions   matched sets are integer row indices; there is no meaningful
 ##               loose comparison of one, so they are compared exactly on the
 ##               reference environment and skipped elsewhere
@@ -40,13 +48,7 @@ recorded_environment <- function() {
 }
 
 current_environment <- function() {
-  data.frame(
-    r_version = paste(R.version$major, R.version$minor, sep = "."),
-    nnet = as.character(utils::packageVersion("nnet")),
-    MASS = as.character(utils::packageVersion("MASS")),
-    RANN = as.character(utils::packageVersion("RANN")),
-    stringsAsFactors = FALSE
-  )
+  golden_environment()
 }
 
 #' Differences between the recorded and current stacks, as a readable string
