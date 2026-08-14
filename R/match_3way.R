@@ -21,12 +21,33 @@
 #'
 #' @export
 calc_caliper_3way <- function(ps_used, treatment_var_values) {
-  
+
   stopifnot(ncol(ps_used) == 2, nrow(ps_used) == length(treatment_var_values))
+
+  if (!all(is.finite(ps_used))) {
+    stop("`ps_used` must contain only finite values.", call. = FALSE)
+  }
+
+  groups <- unique(treatment_var_values)
+  if (length(groups) != 3L) {
+    stop("`treatment_var_values` must contain exactly three treatment groups, ",
+         "got ", length(groups), ".", call. = FALSE)
+  }
+
+  # stats::var() returns NA for a single observation, which would propagate
+  # into the caliper as a silent NA rather than a refusal.
+  sizes <- table(treatment_var_values)
+  too_small <- names(sizes)[sizes < 2L]
+  if (length(too_small) > 0L) {
+    stop("The automatic three-way caliper needs at least two subjects in ",
+         "every treatment group; too few in: ",
+         paste(too_small, collapse = ", "), ".", call. = FALSE)
+  }
+
   var_by_group <- sapply(seq_len(2), function(j) {
     tapply(ps_used[, j], treatment_var_values, stats::var)
   })
-  
+
   0.6 * sqrt(sum(rowMeans(var_by_group)) / 3)
 }
 
@@ -211,6 +232,8 @@ match_3way <- function(data, search, gps, X_vars = NULL,
 
   top_n <- require_positive_int(top_n, "top_n")
   check_fingerprint(search, data, treatment_var)
+  gps <- validate_gps(data, gps, treatment_var, "match_3way")
+  check_gps_fingerprint(search, gps)
   labels <- treatment_labels(data, treatment_var)
   groups <- as.character(search$groups)
   if (length(groups) != 2L) {
@@ -229,6 +252,8 @@ match_3way <- function(data, search, gps, X_vars = NULL,
   # Define the two-dimensional propensity score space
   if (is.null(reference_level)) {
     reference_level <- all_levels[length(all_levels)]
+  } else {
+    reference_level <- treatment_level(reference_level)
   }
   stopifnot(reference_level %in% all_levels)
   ps_levels <- setdiff(all_levels, reference_level)
@@ -241,7 +266,11 @@ match_3way <- function(data, search, gps, X_vars = NULL,
   if (identical(caliper, "auto")) {
     caliper <- calc_caliper_3way(ps_used, labels)
   }
-  stopifnot(is.numeric(caliper), length(caliper) == 1, caliper > 0)
+  if (!is.numeric(caliper) || length(caliper) != 1L ||
+      !is.finite(caliper) || caliper <= 0) {
+    stop("`caliper` must be a single finite number greater than zero.",
+         call. = FALSE)
+  }
 
   # --- Treatment groups
   # Use the smallest treatment group as the matching base
@@ -274,7 +303,7 @@ match_3way <- function(data, search, gps, X_vars = NULL,
 
   # Shared pool of candidate trios
   pool_red <- integer(0); pool_o1 <- integer(0); pool_o2 <- integer(0)
-  pool_perim <- numeric(0); pool_d_o1 <- numeric(0); pool_d_o2 <- numeric(0)
+  pool_perim <- numeric(0)
 
   # --- Candidate generation
   # Build KD-trees for the two remaining treatment groups
@@ -292,12 +321,10 @@ match_3way <- function(data, search, gps, X_vars = NULL,
     small <- d_pr_nb + d_pr_nbg + d_nb_nbg
 
     cand_o1 <- integer(0); cand_o2 <- integer(0); cand_perim <- numeric(0)
-    cand_d1 <- numeric(0); cand_d2 <- numeric(0)
 
     # Include the initial candidate when it satisfies the caliper
     if (small <= caliper) {
       cand_o1 <- nb; cand_o2 <- nbg; cand_perim <- small
-      cand_d1 <- d_pr_nb; cand_d2 <- d_pr_nbg
     }
 
     # Search for additional candidates near the base subject
@@ -321,8 +348,6 @@ match_3way <- function(data, search, gps, X_vars = NULL,
         cand_o1    <- c(cand_o1,    nbs[keep[, 1]])
         cand_o2    <- c(cand_o2,    ngs[keep[, 2]])
         cand_perim <- c(cand_perim, perim[keep])
-        cand_d1    <- c(cand_d1,    d_pr_A[keep[, 1]])
-        cand_d2    <- c(cand_d2,    d_pr_B[keep[, 2]])
       }
     }
 
@@ -336,8 +361,6 @@ match_3way <- function(data, search, gps, X_vars = NULL,
     pool_o1    <<- c(pool_o1,    cand_o1[ord])
     pool_o2    <<- c(pool_o2,    cand_o2[ord])
     pool_perim <<- c(pool_perim, cand_perim[ord])
-    pool_d_o1  <<- c(pool_d_o1,  cand_d1[ord])
-    pool_d_o2  <<- c(pool_d_o2,  cand_d2[ord])
     counters[i] <<- length(ord)
     invisible(NULL)
   }

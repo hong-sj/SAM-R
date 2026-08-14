@@ -73,7 +73,7 @@ compute_balancing_weights <- function(data, method = c("iptw", "overlap", "match
     gps <- estimate_gps_multinom(data, X_vars = X_vars, treatment_var = treatment_var,
                                   anchor_level = anchor_level)$gps
   }
-  stopifnot(all(treat_chr %in% colnames(gps)))
+  gps <- validate_gps(data, gps, treatment_var, "compute_balancing_weights")
 
   # Bound the scores away from zero before dividing by them. estimate_gps_
   # multinom fits an unregularised model, so near-separation can drive a score
@@ -130,12 +130,37 @@ compute_balancing_weights <- function(data, method = c("iptw", "overlap", "match
 #' @export
 compute_weighted_balance <- function(data, weights, X_vars = paste0("X", 1:10),
                                       treatment_var = "T", anchor_level = "A") {
-  stopifnot(length(weights) == nrow(data))
+  weights <- as.numeric(weights)
+  if (length(weights) != nrow(data)) {
+    stop("`weights` and `data` must have the same number of observations (",
+         length(weights), " vs ", nrow(data), ").", call. = FALSE)
+  }
+  if (!all(is.finite(weights))) {
+    stop("`weights` must all be finite.", call. = FALSE)
+  }
+  if (any(weights < 0)) {
+    stop("`weights` must be non-negative.", call. = FALSE)
+  }
+
   treat_chr <- treatment_labels(data, treatment_var)
   anchor_level <- treatment_level(anchor_level)
-  require_rows(which(treat_chr == anchor_level), anchor_level, treatment_var,
-               available = treat_chr)
+  anchor_rows <- require_rows(which(treat_chr == anchor_level), anchor_level,
+                              treatment_var, available = treat_chr)
   groups <- setdiff(unique(treat_chr), anchor_level)
+
+  # A group whose weights sum to zero makes every weighted mean 0/0, which
+  # would otherwise surface as a table of NaNs.
+  zero_weight <- c(anchor_level, groups)[
+    vapply(c(anchor_level, groups),
+           function(g) sum(weights[treat_chr == g]) <= 0, logical(1))
+  ]
+  if (length(zero_weight) > 0L) {
+    stop("Weights must have a positive sum in every treatment group; the sum ",
+         "is zero in: ", paste(zero_weight, collapse = ", "), ".",
+         call. = FALSE)
+  }
+
+  require_covariates(data, X_vars)
 
   wtd_mean <- function(x, w) sum(x * w) / sum(w)
   wtd_var <- function(x, w) {

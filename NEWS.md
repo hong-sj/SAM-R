@@ -31,6 +31,8 @@ sign change listed under "Breaking changes".
   `n_trimmed` on the weighting output (#9), `max_possible_rate` on both
   matching engines (#8), and `separation` on the outcome contrasts (#14).
 * `RANN` is a new dependency (#6).
+* `gps` is validated at every stage that accepts it, and `gps_candidate_search()`
+  records a `gps_fingerprint` that later stages verify.
 
 ## Bug fixes
 
@@ -53,6 +55,26 @@ sign change listed under "Breaking changes".
 * Complete outcome separation is detected, warned about, and flagged (#14).
 * An unbounded IPTW weight from near-separation is trimmed; the largest weight
   in a separated example falls from 9,478 to 334 (#9).
+* A GPS matrix that does not describe `data` is rejected rather than silently
+  producing a different match: values outside `[0, 1]`, non-finite values, rows
+  that do not sum to one, duplicated or unnamed columns, a row order that
+  disagrees with `data`, and a treatment level with no GPS column. That last
+  one previously dropped the level out of `groups`, so 59 subjects on the
+  bundled data were never matched and nothing said so.
+* Handing a *different* GPS to `sam_evaluate()` or `match_3way()` than the one
+  the candidate pools were selected against is rejected.
+* A missing treatment label is rejected. It previously compared as `NA` against
+  every group, so the subject silently vanished from all of them.
+* The data fingerprint now digests every column recorded at search time, so
+  rewriting the contents of existing rows is caught as well as reordering them.
+  Adding a column between stages remains legal.
+* `compute_weighted_balance()` rejects weights that are non-finite, negative or
+  the wrong length, and a treatment group whose weights sum to zero — which
+  previously produced a table of `NaN`.
+* `calc_caliper_3way()` requires exactly three groups, finite scores and at
+  least two subjects per group; `stats::var()` of a single observation is `NA`,
+  which reached the caliper silently. `match_3way()` requires a finite caliper
+  and reads a numeric `reference_level` as a level name.
 
 ## Performance
 

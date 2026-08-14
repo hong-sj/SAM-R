@@ -83,6 +83,8 @@ sam_evaluate <- function(data, search, match_result, gps,
   matched <- match_result$matched
 
   check_fingerprint(search, data, treatment_var)
+  gps <- validate_gps(data, gps, treatment_var, "sam_evaluate")
+  check_gps_fingerprint(search, gps)
   labels <- treatment_labels(data, treatment_var)
   anchor_level <- unique(labels[search$anchor_rows])
   stopifnot(length(anchor_level) == 1)

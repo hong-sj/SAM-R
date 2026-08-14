@@ -30,9 +30,14 @@
 #'       comparator group.}
 #'     \item{fingerprint}{Identifies the exact frame, in the exact row order,
 #'       that the search ran on. Every later stage verifies it, because
-#'       matched sets are stored as positional row indices: re-sorting or
-#'       filtering `data` in between would silently repoint them at other
-#'       subjects. Adding a column, such as an outcome, is still allowed.}
+#'       matched sets are stored as positional row indices: re-sorting,
+#'       filtering or rewriting `data` in between would silently repoint them
+#'       at other subjects. Adding a column, such as an outcome, is still
+#'       allowed.}
+#'     \item{gps_fingerprint}{Identifies the GPS matrix the candidate pools
+#'       were selected against, so that a later stage handed a different one
+#'       fails rather than reporting diagnostics for scores that never
+#'       produced the match.}
 #'   }
 #'
 #' @examples
@@ -70,7 +75,7 @@ gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = 
   top_m <- require_positive_int(top_m, "top_m")
   labels <- treatment_labels(data, treatment_var)
   anchor_level <- treatment_level(anchor_level)
-  stopifnot(nrow(gps) == nrow(data))
+  gps <- validate_gps(data, gps, treatment_var, "gps_candidate_search")
 
   if (!(anchor_level %in% colnames(gps))) {
     stop("`anchor_level` \"", anchor_level, "\" is not a column of `gps`. ",
@@ -146,7 +151,9 @@ gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = 
     groups = groups,
     candidates = candidates,
     # Matched sets are stored as positional row indices, so every later stage
-    # needs this exact frame in this exact row order.
-    fingerprint = data_fingerprint(data, treatment_var)
+    # needs this exact frame in this exact row order, and the GPS the pools
+    # were selected against.
+    fingerprint = data_fingerprint(data, treatment_var),
+    gps_fingerprint = gps_fingerprint(gps)
   )
 }

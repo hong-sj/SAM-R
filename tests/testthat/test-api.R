@@ -169,3 +169,40 @@ test_that("get_pooled_covariance has usable defaults", {
   pooled <- get_pooled_covariance(data, X_vars = paste0("X", 1:3))
   expect_equal(dim(pooled$S), c(3L, 3L))
 })
+
+test_that("calc_caliper_3way refuses input it cannot summarise", {
+  ps <- matrix(stats::runif(60), 30, 2)
+
+  expect_error(calc_caliper_3way(ps, rep(c("A", "B"), each = 15)),
+               "exactly three treatment groups")
+
+  # stats::var() of a single observation is NA, which would otherwise reach the
+  # caliper silently.
+  expect_error(
+    calc_caliper_3way(ps, c(rep("A", 14), rep("B", 15), "C")),
+    "at least two subjects"
+  )
+
+  non_finite <- ps
+  non_finite[1, 1] <- NA_real_
+  expect_error(calc_caliper_3way(non_finite, rep(c("A", "B", "C"), each = 10)),
+               "only finite values")
+})
+
+test_that("match_3way validates the caliper and the reference level", {
+  fixture <- sam_fixture("sample_3group")
+
+  match_with <- function(...) {
+    match_3way(fixture$data, fixture$search, fixture$gps,
+               treatment_var = "treatment", ...)
+  }
+
+  expect_error(match_with(caliper = 0), "finite number greater than zero")
+  expect_error(match_with(caliper = -1), "finite number greater than zero")
+  expect_error(match_with(caliper = Inf), "finite number greater than zero")
+  expect_error(match_with(caliper = c(1, 2)), "finite number greater than zero")
+
+  # A reference level given as a number must name a level, not a position.
+  expect_error(match_with(reference_level = 1))
+  expect_silent(match_with(reference_level = fixture$anchor))
+})

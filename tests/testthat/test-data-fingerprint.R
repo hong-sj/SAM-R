@@ -64,12 +64,10 @@ test_that("a reorder within one treatment group is still caught", {
   )
 })
 
-test_that("rewriting row contents in place is a documented blind spot", {
-  # The fingerprint records row identity and the treatment column, not the
-  # covariates, so that attaching an outcome column stays legal. Overwriting
-  # the *contents* of existing rows therefore passes: it changes neither the
-  # row names nor the labels. This is a deliberate trade-off, pinned here so
-  # that the limit is visible rather than assumed away.
+test_that("rewriting row contents in place is caught", {
+  # Overwriting the *contents* of existing rows changes neither the row names
+  # nor the treatment labels, so it is invisible to those two alone. The
+  # per-column digests close that gap.
   fixture <- sam_fixture()
   labels <- treatment_labels(fixture$data, "treatment")
   anchor_rows <- which(labels == fixture$anchor)
@@ -77,9 +75,40 @@ test_that("rewriting row contents in place is a documented blind spot", {
   rewritten <- fixture$data
   rewritten[anchor_rows, ] <- rewritten[rev(anchor_rows), ]
 
-  expect_silent(
+  expect_identical(rownames(rewritten), rownames(fixture$data))
+  expect_identical(treatment_labels(rewritten, "treatment"), labels)
+
+  expect_error(
     sam_match(rewritten, fixture$search, X_vars = fixture$X_vars,
-              treatment_var = "treatment")
+              treatment_var = "treatment"),
+    "column value\\(s\\) changed"
+  )
+})
+
+test_that("the changed columns are named", {
+  fixture <- sam_fixture()
+  edited <- fixture$data
+  edited[[fixture$X_vars[2]]][7] <- edited[[fixture$X_vars[2]]][7] + 1
+
+  expect_error(
+    sam_match(edited, fixture$search, X_vars = fixture$X_vars,
+              treatment_var = "treatment"),
+    fixture$X_vars[2],
+    fixed = TRUE
+  )
+})
+
+test_that("a covariate error is reported ahead of the fingerprint mismatch", {
+  # Inserting an NA both breaks the covariates and changes the fingerprint.
+  # The specific, actionable message is the one worth surfacing.
+  fixture <- sam_fixture()
+  broken <- fixture$data
+  broken[[fixture$X_vars[1]]][3] <- NA_real_
+
+  expect_error(
+    sam_match(broken, fixture$search, X_vars = fixture$X_vars,
+              treatment_var = "treatment"),
+    "missing or non-finite"
   )
 })
 

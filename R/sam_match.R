@@ -76,6 +76,11 @@
 sam_match <- function(data, search, X_vars = paste0("X", 1:10),
                       treatment_var = "T") {
   
+  # Validate the covariates first. A caller who both rewrites a value and makes
+  # it unusable -- inserting an NA, say -- should be told about the NA, not
+  # about the fingerprint mismatch the same edit produces.
+  X <- covariate_matrix(data, X_vars)
+
   check_fingerprint(search, data, treatment_var)
   labels <- treatment_labels(data, treatment_var)
   anchor_rows <- as.integer(search$anchor_rows)
@@ -102,10 +107,8 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
     groups
   )
   
-  # Materialise the covariates once and slice, rather than rebuilding a frame
-  # per group. `covariate_matrix()` has already rejected non-numeric and
-  # non-finite columns by this point.
-  X <- covariate_matrix(data, X_vars)
+  # The covariates were materialised once above and are sliced here, rather
+  # than rebuilding a frame per group.
   X_anchor <- X[anchor_rows, , drop = FALSE]
 
   X_group <- stats::setNames(

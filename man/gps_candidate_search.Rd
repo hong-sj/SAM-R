@@ -38,9 +38,14 @@ A list with:
       comparator group.}
     \item{fingerprint}{Identifies the exact frame, in the exact row order,
       that the search ran on. Every later stage verifies it, because
-      matched sets are stored as positional row indices: re-sorting or
-      filtering `data` in between would silently repoint them at other
-      subjects. Adding a column, such as an outcome, is still allowed.}
+      matched sets are stored as positional row indices: re-sorting,
+      filtering or rewriting `data` in between would silently repoint them
+      at other subjects. Adding a column, such as an outcome, is still
+      allowed.}
+    \item{gps_fingerprint}{Identifies the GPS matrix the candidate pools
+      were selected against, so that a later stage handed a different one
+      fails rather than reporting diagnostics for scores that never
+      produced the match.}
   }
 }
 \description{

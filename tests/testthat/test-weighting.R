@@ -231,3 +231,40 @@ test_that("evaluate_comparator_weighting surfaces n_trimmed", {
   expect_true(all(is.finite(report$ess$ess)))
   expect_true(all(is.finite(report$balance$summary$mean_abs_smd)))
 })
+
+test_that("compute_weighted_balance validates its weights", {
+  fixture <- sam_fixture()
+
+  balance_with <- function(weights) {
+    compute_weighted_balance(fixture$data, weights, X_vars = fixture$X_vars,
+                             treatment_var = "treatment",
+                             anchor_level = fixture$anchor)
+  }
+
+  expect_error(balance_with(rep(1, 3)), "same number of observations")
+  expect_error(balance_with(c(NA_real_, rep(1, nrow(fixture$data) - 1))),
+               "must all be finite")
+  expect_error(balance_with(c(Inf, rep(1, nrow(fixture$data) - 1))),
+               "must all be finite")
+  expect_error(balance_with(c(-1, rep(1, nrow(fixture$data) - 1))),
+               "non-negative")
+})
+
+test_that("a treatment group with zero total weight is named, not NaN", {
+  fixture <- sam_fixture()
+  labels <- treatment_labels(fixture$data, "treatment")
+  starved <- fixture$groups[1]
+
+  weights <- rep(1, nrow(fixture$data))
+  weights[labels == starved] <- 0
+
+  # Previously: every weighted mean for that group became 0/0 and the table
+  # came back full of NaN.
+  expect_error(
+    compute_weighted_balance(fixture$data, weights, X_vars = fixture$X_vars,
+                             treatment_var = "treatment",
+                             anchor_level = fixture$anchor),
+    starved,
+    fixed = TRUE
+  )
+})
