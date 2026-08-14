@@ -11,6 +11,12 @@
 # would otherwise map 0 and 1 to infinities.
 .SAM_LOGIT_EPS <- 1e-6
 
+# Relative tolerance for deciding that two candidate distances are tied. A k-d
+# tree accumulates a distance in a different order than the matrix formula
+# does, so the two do not agree to the last bit, and an exact comparison would
+# silently drop ties that the full-matrix implementation kept.
+.SAM_TIE_TOL <- 1e-9
+
 
 #' Propensity scores on the requested scale
 #'

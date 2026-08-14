@@ -86,22 +86,52 @@ gps_candidate_search <- function(data, gps, treatment_var = "T", anchor_level = 
                               treatment_var, available = labels)
   X_anchor <- gps_used[anchor_rows, , drop = FALSE]
 
-  # Compute Euclidean GPS distances for each comparator group
+  # Find the nearest candidates in each comparator group.
+  #
+  # A k-d tree query replaces the full anchor-by-comparator distance matrix,
+  # which allocated the product of the two group sizes -- 1.3 GB at n = 20,000
+  # -- and then fully sorted every row to keep top_m of it.
   candidates_by_group <- lapply(groups, function(g) {
     group_rows <- require_rows(which(labels == g), g, treatment_var,
                                available = labels)
     X_group <- gps_used[group_rows, , drop = FALSE]
+    n_group <- length(group_rows)
+    m <- min(top_m, n_group)
 
-    x_sq <- rowSums(X_anchor^2)
-    y_sq <- rowSums(X_group^2)
-    cross <- X_anchor %*% t(X_group)
-    d2 <- outer(x_sq, y_sq, "+") - 2 * cross
-    d2[d2 < 0] <- 0
-    dist_mat <- sqrt(d2)
+    # One neighbour beyond the cutoff, so a tie straddling it is detectable.
+    k_query <- min(m + 1L, n_group)
+    neighbours <- RANN::nn2(data = X_group, query = X_anchor, k = k_query)
 
-    m <- min(top_m, length(group_rows))
-    lapply(seq_len(nrow(dist_mat)), function(i) {
-      group_rows[order(dist_mat[i, ])[seq_len(m)]]
+    neighbour_idx <- neighbours$nn.idx[, seq_len(m), drop = FALSE]
+    neighbour_dist <- neighbours$nn.dists[, seq_len(m), drop = FALSE]
+
+    # The tree resolves equidistant candidates arbitrarily, and when more of
+    # them are tied at the cutoff than there are slots left it returns an
+    # arbitrary subset. A stable sort by row order does neither, so those
+    # anchors are re-resolved against every candidate below.
+    contested <- if (k_query > m) {
+      neighbours$nn.dists[, k_query] <=
+        neighbour_dist[, m] * (1 + .SAM_TIE_TOL)
+    } else {
+      rep(FALSE, nrow(X_anchor))
+    }
+
+    group_sq <- rowSums(X_group^2)
+
+    lapply(seq_len(nrow(X_anchor)), function(i) {
+      if (contested[i]) {
+        # Recomputed exactly as the full-matrix implementation did, so that
+        # the tie-break is identical to the last bit.
+        d2 <- sum(X_anchor[i, ]^2) + group_sq -
+          2 * as.numeric(X_group %*% X_anchor[i, ])
+        d2[d2 < 0] <- 0
+        group_rows[order(sqrt(d2), seq_len(n_group))[seq_len(m)]]
+      } else {
+        # Ties within the returned set still follow row order, matching the
+        # stable sort this replaces.
+        j <- neighbour_idx[i, ]
+        group_rows[j[order(neighbour_dist[i, ], j)]]
+      }
     })
   })
   names(candidates_by_group) <- groups
