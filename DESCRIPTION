@@ -2,7 +2,7 @@ Package: SAMatch
 Type: Package
 Title: Shared Anchor Matching: A Scalable Matching Framework for
         Multiple Treatment Groups
-Version: 0.1.0
+Version: 0.2.0
 Authors@R: person("Sungjun Hong", email = "hsj2864@gmail.com",
     role = c("aut", "cre", "cph"))
 Description: Implements a scalable framework for simultaneously matching
@@ -20,6 +20,5 @@ Suggests: testthat (>= 3.0.0)
 Config/testthat/edition: 3
 Config/roxygen2/version: 8.1.0
 NeedsCompilation: no
-Packaged: 2026-08-13 20:47:43 UTC; hong
 Author: Sungjun Hong [aut, cre, cph]
 Maintainer: Sungjun Hong <hsj2864@gmail.com>
