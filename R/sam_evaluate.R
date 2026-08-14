@@ -385,7 +385,9 @@ extract_matched_data <- function(data, search, match_result,
 #'     \item{analysis_summary}{Matched-cohort summary.}
 #'     \item{group_risk}{Observed risk estimates by treatment group.}
 #'     \item{contrasts}{Comparator-versus-anchor OR, RR, and RD estimates
-#'       with confidence intervals.}
+#'       with confidence intervals, and a `separation` flag marking rows whose
+#'       odds ratio is unreliable because one of the two arms has no events or
+#'       no non-events.}
 #'     \item{model}{Fitted logistic regression model.}
 #'     \item{vcov_cluster}{Matched-set cluster-robust covariance matrix.}
 #'   }
@@ -467,15 +469,34 @@ sam_estimate_effects <- function(matched_data, outcome_var,
     stop("`outcome_var` must be binary and coded as 0/1.")
   }
 
-  # Restrict the analysis to complete outcome, treatment, and set-ID records
-  complete <- stats::complete.cases(
+  # Restrict the analysis to complete matched *sets*. Dropping individual rows
+  # would leave a set with fewer than K members in the analysis, which breaks
+  # the 1:1:...:1 structure that the matched-set cluster-robust variance and
+  # the group comparison both assume.
+  row_complete <- stats::complete.cases(
     matched_data[, required_cols, drop = FALSE]
   )
-  analysis_data <- matched_data[complete, , drop = FALSE]
-  analysis_data[[outcome_var]] <- as.integer(analysis_data[[outcome_var]])
+  incomplete_sets <- unique(matched_data[[set_id_var]][!row_complete])
+  analysis_data <- matched_data[
+    !(matched_data[[set_id_var]] %in% incomplete_sets), , drop = FALSE
+  ]
+
   if (nrow(analysis_data) == 0L) {
-    stop("No complete observations are available for outcome analysis.")
+    stop("No complete matched sets are available for outcome analysis.")
   }
+
+  expected_size <- attr(matched_data, "K")
+  if (is.null(expected_size)) {
+    expected_size <- length(unique(as.character(matched_data[[treatment_var]])))
+  }
+  retained_sizes <- table(analysis_data[[set_id_var]])
+  if (any(retained_sizes != expected_size)) {
+    stop("Outcome analysis contains incomplete matched sets: ",
+         sum(retained_sizes != expected_size), " of ", length(retained_sizes),
+         " do not have ", expected_size, " subjects.", call. = FALSE)
+  }
+
+  analysis_data[[outcome_var]] <- as.integer(analysis_data[[outcome_var]])
 
   if (is.null(anchor_level)) {
     anchor_level <- attr(matched_data, "anchor_level")
@@ -507,6 +528,28 @@ sam_estimate_effects <- function(matched_data, outcome_var,
     analysis_data[[treatment_var]],
     levels = c(anchor_level, comparator_levels)
   )
+
+  # A treatment group with no events, or no non-events, separates the
+  # treatment-only model completely. glm() reports converged = TRUE for such a
+  # fit -- it stops on its deviance tolerance having pushed the coefficient
+  # toward infinity -- so the convergence check below never fires. The affected
+  # rows are flagged as well as warned about, so callers filtering results
+  # programmatically have something to test.
+  separated_levels <- character(0)
+
+  for (level in c(anchor_level, comparator_levels)) {
+    outcomes <- analysis_data[[outcome_var]][
+      as.character(analysis_data[[treatment_var]]) == level
+    ]
+    if (length(outcomes) > 0L &&
+        (sum(outcomes) == 0L || sum(outcomes) == length(outcomes))) {
+      separated_levels <- c(separated_levels, level)
+      warning("Treatment group '", level, "' has ", sum(outcomes), "/",
+              length(outcomes), " events. The treatment-only logistic model ",
+              "may exhibit complete separation and OR inference may be ",
+              "unstable.", call. = FALSE)
+    }
+  }
 
   # Fit the unadjusted treatment-outcome model
   effect_formula <- stats::reformulate(
@@ -643,6 +686,8 @@ sam_estimate_effects <- function(matched_data, outcome_var,
       se_RD = se_RD,
       RD_ci_low = RD_ci_low,
       RD_ci_high = RD_ci_high,
+      separation = anchor_level %in% separated_levels ||
+        g %in% separated_levels,
       stringsAsFactors = FALSE
     )
   })

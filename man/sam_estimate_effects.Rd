@@ -35,7 +35,9 @@ A list containing:
     \item{analysis_summary}{Matched-cohort summary.}
     \item{group_risk}{Observed risk estimates by treatment group.}
     \item{contrasts}{Comparator-versus-anchor OR, RR, and RD estimates
-      with confidence intervals.}
+      with confidence intervals, and a `separation` flag marking rows whose
+      odds ratio is unreliable because one of the two arms has no events or
+      no non-events.}
     \item{model}{Fitted logistic regression model.}
     \item{vcov_cluster}{Matched-set cluster-robust covariance matrix.}
   }
