@@ -28,4 +28,7 @@ A list with `by_covariate` and `summary` data frames, in the
 \description{
 Computes weighted standardized mean differences (SMDs) between the anchor
 group and each comparator group for all covariates in `X_vars`.
+
+SMDs are reported as anchor minus comparator, the same orientation as
+[compute_smd_balance()], so the two tables can be read side by side.
 }

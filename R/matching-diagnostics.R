@@ -19,7 +19,8 @@
 #'
 #' @return A list containing:
 #'   \describe{
-#'     \item{by_covariate}{SMD for each covariate and comparator group, with an
+#'     \item{by_covariate}{SMD for each covariate and comparator group,
+#'       computed as anchor minus comparator, with its absolute value and an
 #'       `smd_defined` flag that is `FALSE` when a covariate has no variance in
 #'       either arm and its SMD is therefore undefined.}
 #'     \item{summary}{Mean and maximum absolute SMD for each comparator group,
@@ -90,7 +91,8 @@ compute_smd_balance <- function(data, matched, X_vars, groups) {
       smd <- if (defined) (mean_a - mean_g) / pooled_sd else 0
 
       rows[[length(rows) + 1]] <- data.frame(
-        group = g, covariate = v, smd = smd, smd_defined = defined
+        group = g, covariate = v, smd = smd, abs_smd = abs(smd),
+        smd_defined = defined
       )
     }
   }

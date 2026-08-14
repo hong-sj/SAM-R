@@ -85,6 +85,9 @@ compute_balancing_weights <- function(data, method = c("iptw", "overlap", "match
 #' Computes weighted standardized mean differences (SMDs) between the anchor
 #' group and each comparator group for all covariates in `X_vars`.
 #'
+#' SMDs are reported as anchor minus comparator, the same orientation as
+#' [compute_smd_balance()], so the two tables can be read side by side.
+#'
 #' @param data,X_vars,treatment_var,anchor_level See
 #'   [compute_balancing_weights()].
 #' @param weights Numeric vector, length `nrow(data)`, e.g.
@@ -123,10 +126,11 @@ compute_weighted_balance <- function(data, weights, X_vars = paste0("X", 1:10),
       m_a <- wtd_mean(x_anchor[[v]], w_anchor); m_g <- wtd_mean(x_g[[v]], w_g)
       var_a <- wtd_var(x_anchor[[v]], w_anchor); var_g <- wtd_var(x_g[[v]], w_g)
 
-      # Same guard as compute_smd_balance(): see summarize_smd().
+      # Anchor minus group, matching compute_smd_balance(). Same guard as
+      # there: see summarize_smd().
       pooled_sd <- sqrt((var_a + var_g) / 2)
       defined <- isTRUE(is.finite(pooled_sd) && pooled_sd > 0)
-      smd <- if (defined) (m_g - m_a) / pooled_sd else 0
+      smd <- if (defined) (m_a - m_g) / pooled_sd else 0
 
       data.frame(group = g, covariate = v, smd = smd, abs_smd = abs(smd),
                  smd_defined = defined)
