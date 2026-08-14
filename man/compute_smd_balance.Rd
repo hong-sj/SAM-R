@@ -19,8 +19,11 @@ compute_smd_balance(data, matched, X_vars, groups)
 \value{
 A list containing:
   \describe{
-    \item{by_covariate}{SMD for each covariate and comparator group.}
-    \item{summary}{Mean and maximum absolute SMD for each comparator group.}
+    \item{by_covariate}{SMD for each covariate and comparator group, with an
+      `smd_defined` flag that is `FALSE` when a covariate has no variance in
+      either arm and its SMD is therefore undefined.}
+    \item{summary}{Mean and maximum absolute SMD for each comparator group,
+      computed over the assessable covariates only, plus `n_undefined`.}
   }
 }
 \description{

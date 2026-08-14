@@ -21,7 +21,9 @@ compute_weighted_balance(
 }
 \value{
 A list with `by_covariate` and `summary` data frames, in the
-  same shape as [compute_smd_balance()]'s return value.
+  same shape as [compute_smd_balance()]'s return value. `by_covariate`
+  additionally carries `abs_smd`, and both carry the `smd_defined` flag and
+  `n_undefined` count described there.
 }
 \description{
 Computes weighted standardized mean differences (SMDs) between the anchor

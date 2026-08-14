@@ -91,7 +91,9 @@ compute_balancing_weights <- function(data, method = c("iptw", "overlap", "match
 #'   `compute_balancing_weights(...)$weights`.
 #'
 #' @return A list with `by_covariate` and `summary` data frames, in the
-#'   same shape as [compute_smd_balance()]'s return value.
+#'   same shape as [compute_smd_balance()]'s return value. `by_covariate`
+#'   additionally carries `abs_smd`, and both carry the `smd_defined` flag and
+#'   `n_undefined` count described there.
 #'
 #' @export
 compute_weighted_balance <- function(data, weights, X_vars = paste0("X", 1:10),
@@ -120,19 +122,20 @@ compute_weighted_balance <- function(data, weights, X_vars = paste0("X", 1:10),
     do.call(rbind, lapply(X_vars, function(v) {
       m_a <- wtd_mean(x_anchor[[v]], w_anchor); m_g <- wtd_mean(x_g[[v]], w_g)
       var_a <- wtd_var(x_anchor[[v]], w_anchor); var_g <- wtd_var(x_g[[v]], w_g)
-      smd <- (m_g - m_a) / sqrt((var_a + var_g) / 2)
-      data.frame(group = g, covariate = v, smd = smd, abs_smd = abs(smd))
+
+      # Same guard as compute_smd_balance(): see summarize_smd().
+      pooled_sd <- sqrt((var_a + var_g) / 2)
+      defined <- isTRUE(is.finite(pooled_sd) && pooled_sd > 0)
+      smd <- if (defined) (m_g - m_a) / pooled_sd else 0
+
+      data.frame(group = g, covariate = v, smd = smd, abs_smd = abs(smd),
+                 smd_defined = defined)
     }))
   })
   by_covariate <- do.call(rbind, rows)
   rownames(by_covariate) <- NULL
 
-  summary_rows <- lapply(groups, function(g) {
-    vals <- by_covariate$abs_smd[by_covariate$group == g]
-    data.frame(group = g, mean_abs_smd = mean(vals), max_abs_smd = max(vals))
-  })
-  summary_df <- do.call(rbind, summary_rows)
-  rownames(summary_df) <- NULL
+  summary_df <- summarize_smd(by_covariate, groups)
 
   list(by_covariate = by_covariate, summary = summary_df)
 }
