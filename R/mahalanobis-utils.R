@@ -36,26 +36,36 @@
 #' @export
 get_pooled_covariance <- function(data, X_vars, treatment_var) {
   labels <- treatment_labels(data, treatment_var)
+  X <- covariate_matrix(data, X_vars)
   groups <- unique(labels)
   p <- length(X_vars)
   S_within <- matrix(0, p, p, dimnames = list(X_vars, X_vars))
 
   for (g in groups) {
-    Xg <- as.matrix(data[labels == g, X_vars, drop = FALSE])
+    Xg <- X[labels == g, , drop = FALSE]
     Xg_centered <- sweep(Xg, MARGIN = 2, STATS = colMeans(Xg), FUN = "-")
     S_within <- S_within + crossprod(Xg_centered)
   }
 
-  df <- nrow(data) - length(groups)
+  df <- nrow(X) - length(groups)
+  if (df <= 0L) {
+    stop("Residual degrees of freedom for the pooled covariance are ", df,
+         " (", nrow(X), " rows, ", length(groups), " treatment groups). ",
+         "At least one more row than treatment groups is required.",
+         call. = FALSE)
+  }
   S <- S_within / df
 
-  S_inv <- tryCatch(
-    solve(S),
-    error = function(e) {
-      warning("Pooled covariance matrix is numerically singular; using MASS::ginv().")
-      MASS::ginv(S)
-    }
-  )
+  # solve() does not raise on a non-finite matrix -- it returns an all-NA one --
+  # so the result is checked explicitly. Without that check the fallback below
+  # is dead code for missing data, and MASS::ginv() covers genuine, finite rank
+  # deficiency only.
+  S_inv <- tryCatch(solve(S), error = function(e) NULL)
+
+  if (is.null(S_inv) || !all(is.finite(S_inv))) {
+    warning("Pooled covariance matrix is numerically singular; using MASS::ginv().")
+    S_inv <- MASS::ginv(S)
+  }
 
   list(S = S, S_inv = S_inv)
 }
@@ -175,10 +185,11 @@ build_group_distance_matrices <- function(data, X_vars, treatment_var, anchor_ro
       require_rows(which(labels == g), g, treatment_var, available = labels)
     }), groups
   )
-  X_anchor <- as.matrix(data[anchor_rows, X_vars, drop = FALSE])
+  X <- covariate_matrix(data, X_vars)
+  X_anchor <- X[anchor_rows, , drop = FALSE]
   D <- stats::setNames(lapply(groups, function(g) {
-    X_group <- as.matrix(data[group_rows[[g]], X_vars, drop = FALSE])
-    mahalanobis_distance_matrix(X_anchor, X_group, pooled$S_inv)
+    mahalanobis_distance_matrix(X_anchor, X[group_rows[[g]], , drop = FALSE],
+                                pooled$S_inv)
   }), groups)
   list(S_inv = pooled$S_inv, group_rows = group_rows, D = D)
 }

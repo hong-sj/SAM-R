@@ -112,14 +112,14 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
     groups
   )
   
-  X_anchor <- as.matrix(
-    data[anchor_rows, X_vars, drop = FALSE]
-  )
-  
+  # Materialise the covariates once and slice, rather than rebuilding a frame
+  # per group. `covariate_matrix()` has already rejected non-numeric and
+  # non-finite columns by this point.
+  X <- covariate_matrix(data, X_vars)
+  X_anchor <- X[anchor_rows, , drop = FALSE]
+
   X_group <- stats::setNames(
-    lapply(groups, function(g) {
-      as.matrix(data[group_rows[[g]], X_vars, drop = FALSE])
-    }),
+    lapply(groups, function(g) X[group_rows[[g]], , drop = FALSE]),
     groups
   )
   

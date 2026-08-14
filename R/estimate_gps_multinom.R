@@ -41,8 +41,6 @@
 #' @export
 estimate_gps_multinom <- function(data, X_vars = paste0("X", 1:10),
                                    treatment_var = "T", anchor_level = "A") {
-  stopifnot(all(X_vars %in% names(data)))
-
   labels <- treatment_labels(data, treatment_var)
   anchor_level <- treatment_level(anchor_level)
   require_rows(which(labels == anchor_level), anchor_level, treatment_var,
@@ -56,7 +54,7 @@ estimate_gps_multinom <- function(data, X_vars = paste0("X", 1:10),
                                      ref = anchor_level)
 
   # Standardize covariates for numerical stability
-  X_raw <- as.matrix(data[, X_vars, drop = FALSE])
+  X_raw <- covariate_matrix(data, X_vars)
   X_mean <- colMeans(X_raw)
   X_sd <- apply(X_raw, 2, stats::sd)
   X_sd[X_sd == 0] <- 1
