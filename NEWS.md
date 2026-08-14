@@ -85,8 +85,12 @@ sign change listed under "Breaking changes".
 * `sam_match()` maintains a reverse index of which anchors claim which
   comparator subject, instead of rescanning every remaining anchor after each
   match. At n = 20,000 this is 2.84 s to 1.63 s (#7).
-* `match_3way()` tombstones popped candidates rather than deleting them from
-  six parallel vectors (#7).
+* `match_3way()` keeps its candidate trios in a binary min-heap. Selecting the
+  cheapest trio previously scanned the whole pool with `which.min`, and the
+  pool never shrank because popped entries were tombstoned, so both the scan
+  and the vector growth were quadratic in the pool size. At n = 24,000 this is
+  24.6 s to 17.8 s. The heap key carries the insertion order alongside the
+  perimeter, which reproduces the previous tie-break exactly.
 * `sam_match()` builds one reverse index per comparator group instead of
   `match()`-ing every anchor's candidates against the whole group, which
   rebuilt a hash table of the group on every call and accounted for 74% of the

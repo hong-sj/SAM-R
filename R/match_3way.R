@@ -301,9 +301,93 @@ match_3way <- function(data, search, gps, X_vars = NULL,
   exhausted    <- rep(FALSE, n_red)
   counters     <- integer(n_red)
 
-  # Shared pool of candidate trios
-  pool_red <- integer(0); pool_o1 <- integer(0); pool_o2 <- integer(0)
-  pool_perim <- numeric(0)
+  # --- Shared pool of candidate trios, as a binary min-heap
+  # Selecting the cheapest trio previously scanned the whole pool with
+  # which.min, and the pool never shrank -- popped entries were tombstoned with
+  # an infinite perimeter. Both the scan and the vector growth were quadratic
+  # in the pool size, which reaches roughly `top_n` entries per base subject.
+  #
+  # Perimeters are fixed once pushed, so an ordinary heap is enough. The key is
+  # (perimeter, insertion order); the second component reproduces which.min's
+  # tie-break, which returned the earliest entry among equal perimeters.
+  heap_capacity <- max(256L, n_red * 2L)
+  heap_perim <- numeric(heap_capacity)
+  heap_seq <- integer(heap_capacity)
+  heap_red <- integer(heap_capacity)
+  heap_o1 <- integer(heap_capacity)
+  heap_o2 <- integer(heap_capacity)
+  heap_size <- 0L
+  heap_pushed <- 0L
+
+  heap_swap <- function(a, b) {
+    tmp_perim <- heap_perim[a]; tmp_seq <- heap_seq[a]
+    tmp_red <- heap_red[a]; tmp_o1 <- heap_o1[a]; tmp_o2 <- heap_o2[a]
+
+    heap_perim[a] <<- heap_perim[b]; heap_seq[a] <<- heap_seq[b]
+    heap_red[a] <<- heap_red[b]; heap_o1[a] <<- heap_o1[b]
+    heap_o2[a] <<- heap_o2[b]
+
+    heap_perim[b] <<- tmp_perim; heap_seq[b] <<- tmp_seq
+    heap_red[b] <<- tmp_red; heap_o1[b] <<- tmp_o1; heap_o2[b] <<- tmp_o2
+    invisible(NULL)
+  }
+
+  # TRUE when entry `a` should come out before entry `b`.
+  heap_before <- function(a, b) {
+    heap_perim[a] < heap_perim[b] ||
+      (heap_perim[a] == heap_perim[b] && heap_seq[a] < heap_seq[b])
+  }
+
+  heap_push <- function(perimeter, red, o1_index, o2_index) {
+    if (heap_size == heap_capacity) {
+      grown <- heap_capacity * 2L
+      length(heap_perim) <<- grown; length(heap_seq) <<- grown
+      length(heap_red) <<- grown; length(heap_o1) <<- grown
+      length(heap_o2) <<- grown
+      heap_capacity <<- grown
+    }
+
+    heap_size <<- heap_size + 1L
+    heap_pushed <<- heap_pushed + 1L
+    child <- heap_size
+
+    heap_perim[child] <<- perimeter
+    heap_seq[child] <<- heap_pushed
+    heap_red[child] <<- red
+    heap_o1[child] <<- o1_index
+    heap_o2[child] <<- o2_index
+
+    while (child > 1L) {
+      parent <- child %/% 2L
+      if (heap_before(parent, child)) break
+      heap_swap(parent, child)
+      child <- parent
+    }
+    invisible(NULL)
+  }
+
+  # Removes and returns the smallest entry as (perimeter, red, o1, o2).
+  heap_pop <- function() {
+    top <- c(heap_perim[1L], heap_red[1L], heap_o1[1L], heap_o2[1L])
+
+    heap_swap(1L, heap_size)
+    heap_size <<- heap_size - 1L
+
+    parent <- 1L
+    repeat {
+      left <- parent * 2L
+      if (left > heap_size) break
+
+      best <- left
+      right <- left + 1L
+      if (right <= heap_size && heap_before(right, left)) best <- right
+      if (heap_before(parent, best)) break
+
+      heap_swap(parent, best)
+      parent <- best
+    }
+    top
+  }
 
   # --- Candidate generation
   # Build KD-trees for the two remaining treatment groups
@@ -357,10 +441,9 @@ match_3way <- function(data, search, gps, X_vars = NULL,
     }
 
     ord <- order(cand_perim)[seq_len(min(top_n, length(cand_perim)))]
-    pool_red   <<- c(pool_red,   rep(i, length(ord)))
-    pool_o1    <<- c(pool_o1,    cand_o1[ord])
-    pool_o2    <<- c(pool_o2,    cand_o2[ord])
-    pool_perim <<- c(pool_perim, cand_perim[ord])
+    for (k in ord) {
+      heap_push(cand_perim[k], i, cand_o1[k], cand_o2[k])
+    }
     counters[i] <<- length(ord)
     invisible(NULL)
   }
@@ -381,23 +464,15 @@ match_3way <- function(data, search, gps, X_vars = NULL,
                          dimnames = list(NULL, groups))
 
   repeat {
-    if (length(pool_perim) == 0L) {
+    if (heap_size == 0L) {
       break
     }
 
-    pop <- which.min(pool_perim)
-    if (!is.finite(pool_perim[pop])) {
-      break
-    }
-
-    i <- pool_red[pop]; b <- pool_o1[pop]; g <- pool_o2[pop]
-    perim_popped <- pool_perim[pop]
-
-    # Tombstone rather than delete. Removing the popped element from all six
-    # parallel vectors copied every one of them on every pop, which is
-    # quadratic in the pool size; an infinite perimeter is never selected
-    # again by which.min.
-    pool_perim[pop] <- Inf
+    popped <- heap_pop()
+    perim_popped <- popped[1L]
+    i <- as.integer(popped[2L])
+    b <- as.integer(popped[3L])
+    g <- as.integer(popped[4L])
 
     # Skip candidates belonging to an already matched base subject
     if (matched_flag[i]) next
