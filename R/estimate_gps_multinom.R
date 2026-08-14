@@ -59,9 +59,21 @@ estimate_gps_multinom <- function(data, X_vars = paste0("X", 1:10),
   X_sd <- apply(X_raw, 2, stats::sd)
   X_sd[X_sd == 0] <- 1
   X_std <- scale(X_raw, center = X_mean, scale = X_sd)
-  model_data <- data.frame(treatment_factor = treatment_factor, X_std)
+
+  # data.frame() applies make.names() unless told otherwise, so a covariate
+  # named "age yrs" would land in the model frame as "age.yrs" while the
+  # formula below still asked for "age yrs". Keeping the names verbatim means
+  # the formula has to quote them.
+  if ("treatment_factor" %in% X_vars) {
+    stop("A covariate may not be named \"treatment_factor\": it collides with ",
+         "the internal response column.", call. = FALSE)
+  }
+
+  model_data <- data.frame(treatment_factor = treatment_factor, X_std,
+                           check.names = FALSE)
   formula <- stats::as.formula(paste(
-    "treatment_factor ~", paste(X_vars, collapse = " + ")
+    "treatment_factor ~",
+    paste(sprintf("`%s`", X_vars), collapse = " + ")
   ))
 
   model <- nnet::multinom(formula, data = model_data, trace = FALSE,
