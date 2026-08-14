@@ -11,7 +11,8 @@ evaluate_comparator_weighting(
   X_vars = paste0("X", 1:10),
   treatment_var = "T",
   anchor_level = "A",
-  stabilize = TRUE
+  stabilize = TRUE,
+  trim = 0.001
 )
 }
 \arguments{
@@ -32,12 +33,20 @@ empirical marginal treatment prevalence (Robins et al., 2000).
 Ignored for `method %in% c("overlap", "matching")`, which are already
 bounded and do not use this stabilization (see file header). Default
 `TRUE`.}
+
+\item{trim}{Lower bound applied to the generalized propensity scores before
+dividing by them, in `[0, 1)`; `0` disables it. Scores are clipped at
+`trim` and renormalized to sum to one. Because the GPS model is fitted
+without regularization, near-separation can drive a score toward zero and
+the resulting weight either dominates every downstream summary or becomes
+an infinity that propagates silently. Default `1e-3`.}
 }
 \value{
 A list with elements `weights` (from
   [compute_balancing_weights()]), `balance` (from
-  [compute_weighted_balance()]), and `ess` (from
-  [compute_effective_sample_size()]).
+  [compute_weighted_balance()]), `ess` (from
+  [compute_effective_sample_size()]), and `n_trimmed`, surfaced from the
+  weighting step as a positivity diagnostic.
 }
 \description{
 Convenience wrapper that computes balancing weights, weighted covariate

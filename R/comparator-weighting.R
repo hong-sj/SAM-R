@@ -24,10 +24,20 @@
 #'   Ignored for `method %in% c("overlap", "matching")`, which are already
 #'   bounded and do not use this stabilization (see file header). Default
 #'   `TRUE`.
+#' @param trim Lower bound applied to the generalized propensity scores before
+#'   dividing by them, in `[0, 1)`; `0` disables it. Scores are clipped at
+#'   `trim` and renormalized to sum to one. Because the GPS model is fitted
+#'   without regularization, near-separation can drive a score toward zero and
+#'   the resulting weight either dominates every downstream summary or becomes
+#'   an infinity that propagates silently. Default `1e-3`.
 #'
 #' @return A list with elements `weights` (numeric vector, length
 #'   `nrow(data)`), `h` (the tilting-function value per subject), `method`,
-#'   and `gps` (the GPS matrix used).
+#'   `gps` (the GPS matrix supplied or estimated, before trimming), and
+#'   `n_trimmed` (the number of subjects with at least one score below `trim`).
+#'   `n_trimmed` doubles as a positivity diagnostic: a nonzero count means the
+#'   data contain subjects with near-zero probability of a treatment they could
+#'   have received.
 #'
 #' @examples
 #' data(sample_4group)
@@ -51,22 +61,40 @@
 compute_balancing_weights <- function(data, method = c("iptw", "overlap", "matching"),
                                        gps = NULL, X_vars = paste0("X", 1:10),
                                        treatment_var = "T", anchor_level = "A",
-                                       stabilize = TRUE) {
+                                       stabilize = TRUE, trim = 1e-3) {
   method <- match.arg(method)
   treat_chr <- treatment_labels(data, treatment_var)
   anchor_level <- treatment_level(anchor_level)
+  if (!is.numeric(trim) || length(trim) != 1L || !is.finite(trim) ||
+      trim < 0 || trim >= 1) {
+    stop("`trim` must be a single number in [0, 1).", call. = FALSE)
+  }
   if (is.null(gps)) {
     gps <- estimate_gps_multinom(data, X_vars = X_vars, treatment_var = treatment_var,
                                   anchor_level = anchor_level)$gps
   }
   stopifnot(all(treat_chr %in% colnames(gps)))
 
-  own_gps <- gps[cbind(seq_len(nrow(gps)), match(treat_chr, colnames(gps)))]
+  # Bound the scores away from zero before dividing by them. estimate_gps_
+  # multinom fits an unregularised model, so near-separation can drive a score
+  # toward zero; left unbounded, one such score produces a weight large enough
+  # to dominate every downstream summary, or an infinity that propagates into
+  # the balance and effective-sample-size tables without a warning.
+  gps_used <- gps
+  n_trimmed <- if (trim > 0) sum(apply(gps_used < trim, 1, any)) else 0L
+
+  if (n_trimmed > 0L) {
+    gps_used <- pmax(gps_used, trim)
+    gps_used <- gps_used / rowSums(gps_used)
+  }
+
+  own_gps <- gps_used[cbind(seq_len(nrow(gps_used)),
+                            match(treat_chr, colnames(gps_used)))]
 
   h <- switch(method,
-    iptw = rep(1, nrow(gps)),
-    overlap = 1 / rowSums(1 / gps),
-    matching = apply(gps, 1, min)
+    iptw = rep(1, nrow(gps_used)),
+    overlap = 1 / rowSums(1 / gps_used),
+    matching = do.call(pmin, as.data.frame(gps_used))
   )
 
   weights <- h / own_gps
@@ -76,7 +104,8 @@ compute_balancing_weights <- function(data, method = c("iptw", "overlap", "match
     weights <- weights * as.numeric(marg_p[treat_chr])
   }
 
-  list(weights = as.numeric(weights), h = as.numeric(h), method = method, gps = gps)
+  list(weights = as.numeric(weights), h = as.numeric(h), method = method,
+       gps = gps, n_trimmed = as.integer(n_trimmed))
 }
 
 #' Weighted covariate balance
@@ -183,8 +212,9 @@ compute_effective_sample_size <- function(data, weights, treatment_var = "T") {
 #'
 #' @return A list with elements `weights` (from
 #'   [compute_balancing_weights()]), `balance` (from
-#'   [compute_weighted_balance()]), and `ess` (from
-#'   [compute_effective_sample_size()]).
+#'   [compute_weighted_balance()]), `ess` (from
+#'   [compute_effective_sample_size()]), and `n_trimmed`, surfaced from the
+#'   weighting step as a positivity diagnostic.
 #'
 #' @examples
 #' data(sample_4group)
@@ -209,13 +239,13 @@ compute_effective_sample_size <- function(data, weights, treatment_var = "T") {
 evaluate_comparator_weighting <- function(data, method = c("iptw", "overlap", "matching"),
                                            gps = NULL, X_vars = paste0("X", 1:10),
                                            treatment_var = "T", anchor_level = "A",
-                                           stabilize = TRUE) {
+                                           stabilize = TRUE, trim = 1e-3) {
   method <- match.arg(method)
   w <- compute_balancing_weights(data, method = method, gps = gps, X_vars = X_vars,
                                   treatment_var = treatment_var, anchor_level = anchor_level,
-                                  stabilize = stabilize)
+                                  stabilize = stabilize, trim = trim)
   balance <- compute_weighted_balance(data, w$weights, X_vars = X_vars,
                                        treatment_var = treatment_var, anchor_level = anchor_level)
   ess <- compute_effective_sample_size(data, w$weights, treatment_var = treatment_var)
-  list(weights = w, balance = balance, ess = ess)
+  list(weights = w, balance = balance, ess = ess, n_trimmed = w$n_trimmed)
 }
