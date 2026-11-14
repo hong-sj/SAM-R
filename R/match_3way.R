@@ -218,6 +218,150 @@ kdtree_range <- function(tree, coords, query, radius2) {
   descend(tree$root)
 }
 
+# --- Available-subject index for three-way matching
+#
+# Comparator subjects still available, sorted by their first coordinate. A
+# query scans the vertical strip that can hold an answer -- located by binary
+# search -- and decides membership on exact squared distances,
+# dx * dx + dy * dy, the same arithmetic the Python implementation performs.
+# Each query is a handful of vectorised operations instead of a recursive
+# R-level tree walk, which was where three-way matching spent its time.
+#
+# Consumed subjects are flagged, and the sorted index is rebuilt over the
+# survivors whenever half of the subjects it holds have been consumed, so a
+# strip never fills up with dead entries.
+.SAM_INDEX_RTOL <- 1e-9
+
+.active_group <- function(coords) {
+  group <- new.env(parent = emptyenv())
+  # Plain unnamed vectors: findInterval() runs as.double() on its table, which
+  # copies the whole vector on every query if it carries names.
+  group$x <- unname(coords[, 1L])
+  group$y <- unname(coords[, 2L])
+  group$active <- rep(TRUE, nrow(coords))
+  group$n_active <- nrow(coords)
+  .ag_index(group)
+  group
+}
+
+.ag_index <- function(group) {
+  members <- which(group$active)
+  ordered <- members[order(group$x[members], members)]
+  group$members <- ordered
+  group$sorted_x <- group$x[ordered]
+  group$n_indexed <- length(ordered)
+  # Starting half-width for nearest-neighbour strips: about one typical
+  # spacing between points. Quadrupled until the answer is certain.
+  if (length(members) > 0L) {
+    extent <- max(diff(range(group$x[members])), diff(range(group$y[members])))
+    group$start_width <- max(extent / sqrt(length(members)), 1e-8)
+  }
+  invisible(NULL)
+}
+
+.ag_deactivate <- function(group, point) {
+  group$active[point] <- FALSE
+  group$n_active <- group$n_active - 1L
+  if (group$n_active * 2L <= group$n_indexed) {
+    .ag_index(group)
+  }
+  invisible(NULL)
+}
+
+# Indexed subjects whose first coordinate lies within `half_width` of `qx`.
+.ag_strip <- function(group, qx, half_width) {
+  bounds <- findInterval(c(qx - half_width, qx + half_width), group$sorted_x,
+                         checkSorted = FALSE, checkNA = FALSE)
+  lo <- bounds[1L] + 1L
+  hi <- bounds[2L]
+  if (hi < lo) {
+    return(integer(0))
+  }
+  group$members[lo:hi]
+}
+
+# Available subjects strictly inside the squared radius, by ascending row.
+.ag_within <- function(group, query, radius2) {
+  if (group$n_active == 0L) {
+    return(integer(0))
+  }
+  points <- .ag_strip(group, query[1L],
+                      sqrt(radius2) * (1 + .SAM_INDEX_RTOL) + 1e-300)
+  points <- points[group$active[points]]
+  dx <- group$x[points] - query[1L]
+  dy <- group$y[points] - query[2L]
+  sort(points[dx * dx + dy * dy < radius2])
+}
+
+# Lowest-row available subject at the minimum distance, or NA.
+.ag_nearest <- function(group, query) {
+  if (group$n_active == 0L) {
+    return(NA_integer_)
+  }
+  qx <- query[[1L]]
+  qy <- query[[2L]]
+  width <- group$start_width
+  n_indexed <- group$n_indexed
+  repeat {
+    bounds <- findInterval(c(qx - width, qx + width), group$sorted_x,
+                           checkSorted = FALSE, checkNA = FALSE)
+    lo <- bounds[1L] + 1L
+    hi <- bounds[2L]
+    whole <- lo <= 1L && hi >= n_indexed
+    if (hi >= lo) {
+      points <- group$members[lo:hi]
+      points <- points[group$active[points]]
+      if (length(points) > 0L) {
+        dx <- group$x[points] - qx
+        dy <- group$y[points] - qy
+        d2 <- dx * dx + dy * dy
+        best <- min(d2)
+        # Everything outside the strip is at least `width` away. Once that
+        # clears the best distance by the tolerance, nothing unseen can tie
+        # or win.
+        if (whole || sqrt(best) * (1 + .SAM_INDEX_RTOL) + 1e-300 < width) {
+          return(min(points[d2 == best]))
+        }
+      } else if (whole) {
+        return(NA_integer_)
+      }
+    } else if (whole) {
+      return(NA_integer_)
+    }
+    width <- width * 4
+  }
+}
+
+# Nearest subject for many queries while nothing has been consumed: one
+# batched query to RANN's compiled tree, with any query whose runner-up is not
+# clearly farther resolved exactly by .ag_nearest().
+.nearest_untouched <- function(group, coords, queries) {
+  k <- min(2L, nrow(coords))
+  found <- RANN::nn2(data = coords, query = queries, k = k)
+  result <- found$nn.idx[, 1L]
+  if (k == 2L) {
+    distance <- found$nn.dists
+    unclear <- which(!(distance[, 2L] >
+                         distance[, 1L] * (1 + .SAM_INDEX_RTOL) + 1e-300))
+    for (j in unclear) {
+      result[j] <- .ag_nearest(group, queries[j, ])
+    }
+  }
+  as.integer(result)
+}
+
+# Perimeter of each seed trio, summed in the canonical order.
+.seed_perimeter <- function(red, nearest_o1, nearest_o2) {
+  point_distance <- function(a, b) {
+    dx <- a[, 1L] - b[, 1L]
+    dy <- a[, 2L] - b[, 2L]
+    sqrt(dx * dx + dy * dy)
+  }
+  (point_distance(nearest_o1, red) + point_distance(nearest_o2, red)) +
+    point_distance(nearest_o1, nearest_o2)
+}
+
+
 #' Three-way propensity score matching
 #'
 #' @description
@@ -395,25 +539,50 @@ match_3way <- function(data, search, gps, X_vars = NULL,
   coords_o1  <- ps_used[rows_by_level[[o1]],        , drop = FALSE]
   coords_o2  <- ps_used[rows_by_level[[o2]],        , drop = FALSE]
 
-  # --- KD-trees and candidate tracking
-  # Use the smallest treatment group as the matching base
-  tree_o1 <- kdtree_build(coords_o1)
-  tree_o2 <- kdtree_build(coords_o2)
+  # --- Candidate search
+  # Candidate generation follows one canonical rule, written so that its result
+  # depends only on the data and never on how a spatial index happens to order
+  # equidistant points:
+  #
+  # * the seed partner is the nearest available subject, lowest row first
+  #   among equidistant ones;
+  # * candidate trios are ranked by (perimeter key, o1 row, o2 row), the key
+  #   being order_key() of the perimeter;
+  # * every distance is computed as sqrt(dx * dx + dy * dy) and every
+  #   perimeter as (d_red_o1 + d_red_o2) + d_o1_o2, exactly as the Python
+  #   implementation does, so both languages see bit-identical values.
+  #
+  # Spatial indexes only propose points; membership is decided on those exact
+  # values. Ties previously followed the k-d tree's traversal order, which
+  # depended on how the tree was built -- and differed between R and Python.
+  group_o1 <- .active_group(coords_o1)
+  group_o2 <- .active_group(coords_o2)
 
   matched_flag <- rep(FALSE, n_red)
   exhausted    <- rep(FALSE, n_red)
   counters     <- integer(n_red)
 
+  # Search radius used whenever the caliper is tighter than a subject's seed
+  # trio. Any trio kept needs perimeter < seed AND perimeter <= caliper, and
+  # each side of a triangle is at most half its perimeter, so nothing farther
+  # than min(seed, caliper) / 2 from the base subject can contribute. When the
+  # caliper binds, the bound is inclusive, so it is widened by a slack far
+  # above rounding error and far below any meaningful distance; the few extra
+  # points gathered fail the perimeter test.
+  caliper_half <- caliper / 2 + 1e-6 * (1 + max(abs(ps_used)))
+  search_half_width <- function(seed) {
+    ifelse(seed <= caliper, seed / 2, caliper_half)
+  }
+
+  x1 <- unname(coords_o1[, 1L]); y1 <- unname(coords_o1[, 2L])
+  x2 <- unname(coords_o2[, 1L]); y2 <- unname(coords_o2[, 2L])
+
   # --- Shared pool of candidate trios, as a binary min-heap
-  # Selecting the cheapest trio previously scanned the whole pool with
-  # which.min, and the pool never shrank -- popped entries were tombstoned with
-  # an infinite perimeter. Both the scan and the vector growth were quadratic
-  # in the pool size, which reaches roughly `top_n` entries per base subject.
-  #
-  # Perimeters are fixed once pushed, so an ordinary heap is enough. The key is
-  # (perimeter, insertion order); the second component reproduces which.min's
-  # tie-break, which returned the earliest entry among equal perimeters.
-  heap_capacity <- max(256L, n_red * 2L)
+  # The key is (perimeter key, insertion order); the second component keeps
+  # equal perimeters in the order they were ranked. The raw perimeter travels
+  # with the entry for the output.
+  heap_capacity <- 256L
+  heap_key <- numeric(heap_capacity)
   heap_perim <- numeric(heap_capacity)
   heap_seq <- integer(heap_capacity)
   heap_red <- integer(heap_capacity)
@@ -422,18 +591,14 @@ match_3way <- function(data, search, gps, X_vars = NULL,
   heap_size <- 0L
   heap_pushed <- 0L
 
-  # TRUE when the entry at `a` should come out before the key it is compared
-  # against. The insertion order is the tie-break, reproducing which.min's
-  # preference for the earliest entry among equal perimeters.
-  heap_before_key <- function(a, perimeter, seq_no) {
-    heap_perim[a] < perimeter ||
-      (heap_perim[a] == perimeter && heap_seq[a] < seq_no)
+  heap_before_key <- function(a, key, seq_no) {
+    heap_key[a] < key || (heap_key[a] == key && heap_seq[a] < seq_no)
   }
 
   # Entries move by carrying a hole up or down and writing the travelling
-  # record once at the end. Swapping two full records at every level costs ten
-  # reads and ten writes; this costs five writes.
+  # record once at the end.
   heap_move <- function(to, from) {
+    heap_key[to] <<- heap_key[from]
     heap_perim[to] <<- heap_perim[from]
     heap_seq[to] <<- heap_seq[from]
     heap_red[to] <<- heap_red[from]
@@ -442,7 +607,8 @@ match_3way <- function(data, search, gps, X_vars = NULL,
     invisible(NULL)
   }
 
-  heap_place <- function(at, perimeter, seq_no, red, o1_index, o2_index) {
+  heap_place <- function(at, key, perimeter, seq_no, red, o1_index, o2_index) {
+    heap_key[at] <<- key
     heap_perim[at] <<- perimeter
     heap_seq[at] <<- seq_no
     heap_red[at] <<- red
@@ -451,132 +617,184 @@ match_3way <- function(data, search, gps, X_vars = NULL,
     invisible(NULL)
   }
 
-  heap_push <- function(perimeter, red, o1_index, o2_index) {
+  heap_push <- function(key, perimeter, red, o1_index, o2_index) {
     if (heap_size == heap_capacity) {
       grown <- heap_capacity * 2L
-      length(heap_perim) <<- grown; length(heap_seq) <<- grown
-      length(heap_red) <<- grown; length(heap_o1) <<- grown
-      length(heap_o2) <<- grown
+      length(heap_key) <<- grown; length(heap_perim) <<- grown
+      length(heap_seq) <<- grown; length(heap_red) <<- grown
+      length(heap_o1) <<- grown; length(heap_o2) <<- grown
       heap_capacity <<- grown
     }
-
     heap_size <<- heap_size + 1L
     heap_pushed <<- heap_pushed + 1L
     seq_no <- heap_pushed
-
     hole <- heap_size
     while (hole > 1L) {
       parent <- hole %/% 2L
-      if (heap_before_key(parent, perimeter, seq_no)) break
+      if (heap_before_key(parent, key, seq_no)) break
       heap_move(hole, parent)
       hole <- parent
     }
-
-    heap_place(hole, perimeter, seq_no, red, o1_index, o2_index)
+    heap_place(hole, key, perimeter, seq_no, red, o1_index, o2_index)
     invisible(NULL)
   }
 
   # Removes and returns the smallest entry as (perimeter, red, o1, o2).
   heap_pop <- function() {
     top <- c(heap_perim[1L], heap_red[1L], heap_o1[1L], heap_o2[1L])
-
-    # The last entry is re-inserted from the root downwards.
     last <- heap_size
+    moving_key <- heap_key[last]
     moving_perim <- heap_perim[last]
     moving_seq <- heap_seq[last]
     moving_red <- heap_red[last]
     moving_o1 <- heap_o1[last]
     moving_o2 <- heap_o2[last]
     heap_size <<- heap_size - 1L
-
     hole <- 1L
     repeat {
       left <- hole * 2L
       if (left > heap_size) break
-
       best <- left
       right <- left + 1L
       if (right <= heap_size &&
-          (heap_perim[right] < heap_perim[left] ||
-             (heap_perim[right] == heap_perim[left] &&
+          (heap_key[right] < heap_key[left] ||
+             (heap_key[right] == heap_key[left] &&
                 heap_seq[right] < heap_seq[left]))) {
         best <- right
       }
-
-      if (!heap_before_key(best, moving_perim, moving_seq)) break
-
+      if (!heap_before_key(best, moving_key, moving_seq)) break
       heap_move(hole, best)
       hole <- best
     }
-
     if (heap_size > 0L) {
-      heap_place(hole, moving_perim, moving_seq, moving_red, moving_o1,
-                 moving_o2)
+      heap_place(hole, moving_key, moving_perim, moving_seq, moving_red,
+                 moving_o1, moving_o2)
     }
     top
   }
 
   # --- Candidate generation
-  # Build KD-trees for the two remaining treatment groups
-  push_candidates <- function(i) {
-    pr <- coords_red[i, ]
-    nb <- kdtree_nearest(tree_o1, coords_o1, pr)
-    if (is.null(nb)) { exhausted[i] <<- TRUE; counters[i] <<- 0L; return(invisible(NULL)) }
-    nbg <- kdtree_nearest(tree_o2, coords_o2, coords_o1[nb, ])
-    if (is.null(nbg)) { exhausted[i] <<- TRUE; counters[i] <<- 0L; return(invisible(NULL)) }
-
-    # Initial candidate triangle
-    d_pr_nb  <- sqrt(sum((pr - coords_o1[nb, ])^2))
-    d_pr_nbg <- sqrt(sum((pr - coords_o2[nbg, ])^2))
-    d_nb_nbg <- sqrt(sum((coords_o1[nb, ] - coords_o2[nbg, ])^2))
-    small <- d_pr_nb + d_pr_nbg + d_nb_nbg
-
+  # Ranks one base subject's candidate trios, given its seed partners and the
+  # available subjects inside the search radius. Returns NULL, and marks the
+  # subject exhausted, when it has none.
+  rank_candidates <- function(i, nb, nbg, seed, nbs, ngs) {
+    qx <- coords_red[[i, 1L]]
+    qy <- coords_red[[i, 2L]]
     cand_o1 <- integer(0); cand_o2 <- integer(0); cand_perim <- numeric(0)
 
-    # Include the initial candidate when it satisfies the caliper
-    if (small <= caliper) {
-      cand_o1 <- nb; cand_o2 <- nbg; cand_perim <- small
+    # Include the seed trio when it satisfies the caliper
+    if (seed <= caliper) {
+      cand_o1 <- nb; cand_o2 <- nbg; cand_perim <- seed
     }
 
-    # Search for additional candidates near the base subject
-    radius2 <- (small / 2)^2
-    nbs <- kdtree_range(tree_o1, coords_o1, pr, radius2)
-    ngs <- kdtree_range(tree_o2, coords_o2, pr, radius2)
-
-    if (length(nbs) > 0 && length(ngs) > 0) {
-      A <- coords_o1[nbs, , drop = FALSE]; B <- coords_o2[ngs, , drop = FALSE]
-      d_pr_A <- sqrt(rowSums((A - matrix(pr, nrow(A), 2, byrow = TRUE))^2))
-      d_pr_B <- sqrt(rowSums((B - matrix(pr, nrow(B), 2, byrow = TRUE))^2))
-      a_sq <- rowSums(A * A); b_sq <- rowSums(B * B)
-      d2m <- outer(a_sq, b_sq, "+") - 2 * (A %*% t(B))
-      
-      # Guard against small negative values from floating-point error
-      d2m[d2m < 0] <- 0
-      d_AB <- sqrt(d2m)
-      perim <- outer(d_pr_A, d_pr_B, "+") + d_AB
-      keep <- which(perim < small & perim <= caliper, arr.ind = TRUE)
-      if (nrow(keep) > 0) {
-        cand_o1    <- c(cand_o1,    nbs[keep[, 1]])
-        cand_o2    <- c(cand_o2,    ngs[keep[, 2]])
+    n_a <- length(nbs)
+    if (n_a > 0L && length(ngs) > 0L) {
+      dx <- x1[nbs] - qx; dy <- y1[nbs] - qy
+      d_pr_A <- sqrt(dx * dx + dy * dy)
+      dx <- x2[ngs] - qx; dy <- y2[ngs] - qy
+      d_pr_B <- sqrt(dx * dx + dy * dy)
+      DX <- outer(x1[nbs], x2[ngs], "-")
+      DY <- outer(y1[nbs], y2[ngs], "-")
+      perim <- outer(d_pr_A, d_pr_B, "+") + sqrt(DX * DX + DY * DY)
+      keep <- which(perim < seed & perim <= caliper)
+      if (length(keep) > 0L) {
+        cand_o1    <- c(cand_o1,    nbs[(keep - 1L) %% n_a + 1L])
+        cand_o2    <- c(cand_o2,    ngs[(keep - 1L) %/% n_a + 1L])
         cand_perim <- c(cand_perim, perim[keep])
       }
     }
 
-    if (length(cand_perim) == 0) {
+    if (length(cand_perim) == 0L) {
       exhausted[i] <<- TRUE; counters[i] <<- 0L
       return(invisible(NULL))
     }
 
-    ord <- order(cand_perim)[seq_len(min(top_n, length(cand_perim)))]
-    for (k in ord) {
-      heap_push(cand_perim[k], i, cand_o1[k], cand_o2[k])
-    }
+    keys <- order_key(cand_perim)
+    ord <- order(keys, cand_o1, cand_o2)[seq_len(min(top_n, length(cand_perim)))]
     counters[i] <<- length(ord)
+    list(key = keys[ord], perimeter = cand_perim[ord],
+         o1 = cand_o1[ord], o2 = cand_o2[ord])
+  }
+
+  # Searches one subject again against the subjects still available.
+  regenerate <- function(i) {
+    q <- coords_red[i, ]
+    nb <- .ag_nearest(group_o1, q)
+    if (is.na(nb)) {
+      exhausted[i] <<- TRUE; counters[i] <<- 0L
+      return(invisible(NULL))
+    }
+    nbg <- .ag_nearest(group_o2, coords_o1[nb, ])
+    if (is.na(nbg)) {
+      exhausted[i] <<- TRUE; counters[i] <<- 0L
+      return(invisible(NULL))
+    }
+    seed <- .seed_perimeter(coords_red[i, , drop = FALSE],
+                            coords_o1[nb, , drop = FALSE],
+                            coords_o2[nbg, , drop = FALSE])
+    half <- search_half_width(seed)
+    radius2 <- half * half
+    ranked <- rank_candidates(i, nb, nbg, seed,
+                              .ag_within(group_o1, q, radius2),
+                              .ag_within(group_o2, q, radius2))
+    for (k in seq_along(ranked$key)) {
+      heap_push(ranked$key[k], ranked$perimeter[k], i, ranked$o1[k],
+                ranked$o2[k])
+    }
     invisible(NULL)
   }
 
-  # Initialize candidate trios
-  for (i in seq_len(n_red)) push_candidates(i)
+  # Initial pass. Nothing has been consumed yet, so every subject's nearest
+  # neighbours come from one batched query to a compiled tree.
+  #
+  # The initial candidates -- most of all candidates ever generated -- are
+  # sorted once into a static queue instead of being pushed through the heap
+  # one at a time; only regenerated candidates use the heap. The next trio is
+  # whichever queue head is smaller by (key, insertion order), and since every
+  # initial entry was inserted before any regenerated one, the order trios
+  # come out in is exactly that of a single heap.
+  initial <- vector("list", n_red)
+  if (n_red > 0L) {
+    nb_all <- .nearest_untouched(group_o1, coords_o1, coords_red)
+    nbg_all <- .nearest_untouched(group_o2, coords_o2,
+                                  coords_o1[nb_all, , drop = FALSE])
+    seed_all <- .seed_perimeter(coords_red,
+                                coords_o1[nb_all, , drop = FALSE],
+                                coords_o2[nbg_all, , drop = FALSE])
+    half_all <- search_half_width(seed_all)
+    radius2_all <- half_all * half_all
+    for (i in seq_len(n_red)) {
+      q <- coords_red[i, ]
+      ranked <- rank_candidates(i, nb_all[i], nbg_all[i], seed_all[i],
+                                .ag_within(group_o1, q, radius2_all[i]),
+                                .ag_within(group_o2, q, radius2_all[i]))
+      if (!is.null(ranked)) {
+        ranked$red <- rep(i, length(ranked$key))
+        initial[[i]] <- ranked
+      }
+    }
+  }
+  # as.numeric()/as.integer() turn the NULL that unlist() gives when no
+  # subject has a candidate into an empty vector.
+  gather <- function(field) unlist(lapply(initial, `[[`, field), use.names = FALSE)
+  static_key <- as.numeric(gather("key"))
+  static_perim <- as.numeric(gather("perimeter"))
+  static_red <- as.integer(gather("red"))
+  static_o1 <- as.integer(gather("o1"))
+  static_o2 <- as.integer(gather("o2"))
+  rm(initial)
+  static_n <- length(static_key)
+  # Insertion order is the position in the concatenation, so ordering by
+  # (key, position) is the heap's (key, insertion order).
+  static_order <- order(static_key, seq_len(static_n))
+  static_key <- static_key[static_order]
+  static_perim <- static_perim[static_order]
+  static_red <- static_red[static_order]
+  static_o1 <- static_o1[static_order]
+  static_o2 <- static_o2[static_order]
+  static_pos <- 1L
+  # Regenerated entries must sort after every initial one at an equal key.
+  heap_pushed <- static_n
 
   # --- Global greedy matching
   # Results accumulate into preallocated vectors and are assembled once, rather
@@ -591,24 +809,32 @@ match_3way <- function(data, search, gps, X_vars = NULL,
                          dimnames = list(NULL, groups))
 
   repeat {
-    if (heap_size == 0L) {
+    static_left <- static_pos <= static_n
+    if (heap_size > 0L &&
+        (!static_left || heap_key[1L] < static_key[static_pos])) {
+      popped <- heap_pop()
+      perim_popped <- popped[1L]
+      i <- as.integer(popped[2L])
+      b <- as.integer(popped[3L])
+      g <- as.integer(popped[4L])
+    } else if (static_left) {
+      perim_popped <- static_perim[static_pos]
+      i <- static_red[static_pos]
+      b <- static_o1[static_pos]
+      g <- static_o2[static_pos]
+      static_pos <- static_pos + 1L
+    } else {
       break
     }
-
-    popped <- heap_pop()
-    perim_popped <- popped[1L]
-    i <- as.integer(popped[2L])
-    b <- as.integer(popped[3L])
-    g <- as.integer(popped[4L])
 
     # Skip candidates belonging to an already matched base subject
     if (matched_flag[i]) next
 
-    if (kdtree_active(tree_o1, b) && kdtree_active(tree_o2, g)) {
+    if (group_o1$active[b] && group_o2$active[g]) {
       # Accept the candidate trio
       matched_flag[i] <- TRUE
-      kdtree_remove(tree_o1, b)
-      kdtree_remove(tree_o2, g)
+      .ag_deactivate(group_o1, b)
+      .ag_deactivate(group_o2, g)
 
       row_red_global <- rows_by_level[[red_level]][i]
       row_o1_global  <- rows_by_level[[o1]][b]
@@ -640,7 +866,7 @@ match_3way <- function(data, search, gps, X_vars = NULL,
       # Refresh candidates when all current options become unavailable
       counters[i] <- counters[i] - 1L
       if (counters[i] <= 0L && !exhausted[i]) {
-        push_candidates(i)
+        regenerate(i)
       }
     }
   }

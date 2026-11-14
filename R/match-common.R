@@ -205,3 +205,26 @@ summarize_matching <- function(matched, anchor_rows, group_rows) {
     max_possible_rate = max_possible_rate(group_rows, anchor_rows)
   )
 }
+
+
+# --- Ordering keys
+#
+# Distances that are mathematically equal -- common whenever covariates are
+# discrete, since two subjects can differ from an anchor by the same amount in
+# different ways -- come out of floating-point arithmetic differing in the last
+# few bits, and which one is "smaller" then depends on summation order: R vs
+# numpy, BLAS vs a plain loop, one release vs the next. Ranking on the raw
+# value lets that noise, not the documented row-order tie-break, decide the
+# match, and the greedy selection then diverges from that step on.
+#
+# Every ranking comparison therefore uses the value snapped to a 1e-10 grid.
+# Differences below 1e-10 (in Mahalanobis or propensity-score units) are far
+# beneath any meaningful distance and far above accumulated rounding error, so
+# genuine ties become exact ties and fall through to the explicit tie-break.
+# The Python implementation uses the identical key: round-half-even of
+# value * 1e10 (R's round() with no digits is IEC 60559 round-half-even).
+.SAM_ORDER_GRID <- 1e10
+
+order_key <- function(x) {
+  round(x * .SAM_ORDER_GRID)
+}

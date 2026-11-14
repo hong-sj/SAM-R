@@ -195,3 +195,13 @@ build_group_distance_matrices <- function(data, X_vars, treatment_var, anchor_ro
   }), groups)
   list(S_inv = pooled$S_inv, group_rows = group_rows, D = D)
 }
+
+
+# W with W %*% t(W) == S_inv. The eigendecomposition is used rather than a
+# Cholesky factor because the pooled precision may come from the
+# pseudo-inverse fallback and be only positive semi-definite.
+whitening_matrix <- function(S_inv) {
+  decomposition <- eigen((S_inv + t(S_inv)) / 2, symmetric = TRUE)
+  decomposition$vectors %*%
+    diag(sqrt(pmax(decomposition$values, 0)), nrow = nrow(S_inv))
+}
