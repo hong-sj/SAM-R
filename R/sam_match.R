@@ -109,12 +109,14 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
   
   # The covariates were materialised once above and are sliced here, rather
   # than rebuilding a frame per group.
-  X_anchor <- X[anchor_rows, , drop = FALSE]
-
-  X_group <- stats::setNames(
-    lapply(groups, function(g) X[group_rows[[g]], , drop = FALSE]),
-    groups
-  )
+  # Distances are computed in whitened coordinates: with S_inv = W W', the
+  # Mahalanobis distance is the Euclidean distance between rows of
+  # (X - mean) W. Differencing first avoids the cancellation in the expanded
+  # form |a|^2 + |b|^2 - 2ab, whose error grows with the squared covariate
+  # magnitude (a calendar year, say) and can reach the size of a real distance
+  # difference. Centering does not change any distance.
+  Z <- sweep(X, 2L, colMeans(X)) %*% whitening_matrix(S_inv)
+  Z_anchor <- Z[anchor_rows, , drop = FALSE]
   
   # --- Candidate distances
   # Compute Mahalanobis distances for GPS-screened candidates and sort
@@ -148,26 +150,25 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
     flat_candidate <- unlist(per_anchor, use.names = FALSE)
     flat_anchor <- rep(seq_len(n_A), counts)
 
-    # Every screened pair in one pass. This is the same expanded form
-    # mahalanobis_distance_matrix() uses -- squared norms under S_inv minus
-    # twice the cross term, clamped at zero -- but calling that function once
-    # per anchor spent most of this loop on R call overhead for a single-row
-    # query. The working set is proportional to the screened candidate set,
-    # which is already held in `candidate_sorted`.
-    anchor_transformed <- X_anchor %*% S_inv
-    anchor_sq <- rowSums(anchor_transformed * X_anchor)
-    group_transformed <- X_group[[g]] %*% S_inv
-    group_sq <- rowSums(group_transformed * X_group[[g]])
-
+    # Every screened pair in one pass, as a difference of whitened rows.
+    Z_group <- Z[group_rows[[g]], , drop = FALSE]
     if (length(flat_candidate) > 0L) {
-      cross <- rowSums(anchor_transformed[flat_anchor, , drop = FALSE] *
-                         X_group[[g]][flat_candidate, , drop = FALSE])
-      d2 <- anchor_sq[flat_anchor] + group_sq[flat_candidate] - 2 * cross
-      d2[d2 < 0] <- 0
-      flat_distance <- sqrt(d2)
+      difference <- Z_anchor[flat_anchor, , drop = FALSE] -
+        Z_group[flat_candidate, , drop = FALSE]
+      flat_distance <- sqrt(rowSums(difference * difference))
     } else {
       flat_distance <- numeric(0)
     }
+
+    # Rank every anchor's candidates in one pass: ordering by (anchor, key,
+    # screening position) groups the pairs by anchor and sorts within each.
+    # The key (see order_key()) makes mathematically equal distances tie
+    # exactly, so they fall back to GPS-screening order rather than to
+    # rounding noise.
+    ranked <- order(flat_anchor, order_key(flat_distance),
+                    seq_along(flat_anchor))
+    flat_candidate <- flat_candidate[ranked]
+    flat_distance <- flat_distance[ranked]
 
     ends <- cumsum(counts)
     starts <- ends - counts + 1L
@@ -180,14 +181,8 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
       }
 
       slice <- starts[i]:ends[i]
-      idx <- flat_candidate[slice]
-      d <- flat_distance[slice]
-
-      # Preserve candidate order when distances are tied
-      ord <- order(d, seq_along(d))
-
-      candidate_sorted[[g]][[i]] <- idx[ord]
-      distance_sorted[[g]][[i]] <- d[ord]
+      candidate_sorted[[g]][[i]] <- flat_candidate[slice]
+      distance_sorted[[g]][[i]] <- flat_distance[slice]
     }
   }
   
@@ -208,6 +203,11 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
   alive <- rep(TRUE, n_A)
   needs_update <- rep(TRUE, n_A)
   best_loss <- rep(Inf, n_A)
+  # Anchors are ranked on the snapped loss (order_key()), then on anchor index:
+  # two anchors whose losses are mathematically equal tie exactly and the lower
+  # index goes first, whatever the rounding noise in the sums. `best_loss`
+  # keeps the raw value for the output.
+  best_key <- rep(Inf, n_A)
 
 
   best_choice <- matrix(
@@ -296,6 +296,7 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
 
       if (p > length(idx)) {
         best_loss[i] <<- Inf
+        best_key[i] <<- Inf
         best_choice[i, ] <<- NA_integer_
         best_dist[i, ] <<- NA_real_
         for (gj in seq_along(groups)) {
@@ -311,6 +312,7 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
     }
 
     best_loss[i] <<- total
+    best_key[i] <<- order_key(total)
     invisible(NULL)
   }
   
@@ -347,14 +349,14 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
   fence <- Inf
 
   rebuild_shortlist <- function() {
-    candidates_alive <- which(alive & is.finite(best_loss))
+    candidates_alive <- which(alive & is.finite(best_key))
     if (length(candidates_alive) == 0L) {
       shortlist <<- integer(0)
       fence <<- Inf
       return(FALSE)
     }
 
-    losses <- best_loss[candidates_alive]
+    losses <- best_key[candidates_alive]
     ranked <- order(losses, candidates_alive)
     ranked_losses <- losses[ranked]
     total_alive <- length(candidates_alive)
@@ -392,7 +394,7 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
     i_star <- NA_integer_
 
     repeat {
-      shortlist <- shortlist[alive[shortlist] & is.finite(best_loss[shortlist])]
+      shortlist <- shortlist[alive[shortlist] & is.finite(best_key[shortlist])]
 
       if (length(shortlist) == 0L) {
         if (!rebuild_shortlist()) {
@@ -401,7 +403,7 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
         next
       }
 
-      current <- best_loss[shortlist]
+      current <- best_key[shortlist]
       smallest <- min(current)
 
       # Every anchor outside the shortlist had a loss of at least `fence` when
@@ -440,6 +442,7 @@ sam_match <- function(data, search, X_vars = paste0("X", 1:10),
     # Retire the selected anchor.
     alive[i_star] <- FALSE
     best_loss[i_star] <- Inf
+    best_key[i_star] <- Inf
     for (gi in seq_along(groups)) {
       unlink_claim(i_star, gi)
     }

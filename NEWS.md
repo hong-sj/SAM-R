@@ -1,3 +1,40 @@
+# SAMatch (development version)
+
+## Reproducibility: one tie-breaking rule, shared with the Python package
+
+* Ranking comparisons in `sam_match()` and `match_3way()` now use distances
+  snapped to a 1e-10 grid (`order_key()`), then the documented row-order
+  tie-break. Mathematically equal distances -- common with discrete
+  covariates -- previously came out of floating-point arithmetic differing in
+  their last bits, so rounding noise rather than the tie-break chose the match,
+  and R and Python diverged on the same input (on a 2,000-subject dataset with
+  216 covariate profiles: different matched sets *and* a different total loss).
+  `tests/testthat/golden/ties_*` pins the result; the identical files are in
+  the Python test suite.
+* `match_3way()` ties no longer follow the k-d tree's traversal order. The
+  seed partner is the nearest available subject with the lowest row among
+  equidistant ones, and candidate trios are ranked by (perimeter, o1 row,
+  o2 row). Perimeters are computed as sqrt(dx^2 + dy^2) sums in a fixed order,
+  bit-identical to Python.
+* On continuous data (the bundled datasets, the synthetic benchmarks) every
+  matched set is unchanged; distances move by at most ~3e-13.
+
+## Accuracy
+
+* `sam_match()` computes Mahalanobis distances as differences of whitened,
+  centred rows instead of the expanded form |a|^2 + |b|^2 - 2ab. The expanded
+  form loses accuracy with the squared covariate magnitude: adding 1e6 to one
+  covariate moved losses by up to 6e-4. They now move by < 1e-8.
+
+## Performance
+
+* `match_3way()` replaces the recursive R-level k-d tree walk with vectorised
+  strip queries over a sorted index (rebuilt as subjects are consumed), batches
+  the initial nearest-neighbour queries through RANN, bounds the search radius
+  by the caliper as well as the seed perimeter, and keeps the initial
+  candidates in a pre-sorted queue so only regenerated ones go through the
+  heap. 13x faster at n = 50,000 (78 s -> 6 s), 8.5x at 20,000.
+
 # SAMatch 0.2.0
 
 A correctness, performance and validation pass over the whole package. Results
